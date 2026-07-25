@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+
+html {
+	color-scheme: dark;
+}
+
+body {
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	background: #0e0e12;
+	color: #f3f4f6;
+	margin: 0;
+	min-height: 100%;
+	font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
