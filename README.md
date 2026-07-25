@@ -2,10 +2,14 @@
 
 A vibe finder for movies, TV, anime, and songs — tell it what you’re in the mood for, get a handful of titles that actually fit.
 
-<!-- Drop a screenshot or GIF of the main flow here (format → genres → result with poster). -->
-![AuraWatch](preview.gif)
+![AuraWatch desktop UI](docs/desktop.png)
 
 **[Try the demo →](https://aura-watching.vercel.app/)**
+
+<p align="center">
+  <img src="docs/minimal.png" alt="Minimal theme" width="48%" />
+  <img src="docs/songs.png" alt="Song recommendations" width="48%" />
+</p>
 
 ---
 
