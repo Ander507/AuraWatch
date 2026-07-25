@@ -1,42 +1,84 @@
-# sv
+# AuraWatch
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+A vibe finder for movies, TV, anime, and songs — tell it what you’re in the mood for, get a handful of titles that actually fit.
 
-## Creating a project
+<!-- Drop a screenshot or GIF of the main flow here (format → genres → result with poster). -->
+![AuraWatch](preview.gif)
 
-If you're seeing this, you've probably already done this step. Congrats!
+**[Try the demo →](https://aura-watching.vercel.app/)**
 
-```sh
-# create a new project
-npx sv create my-app
-```
+---
 
-To recreate this project with the same configuration:
+## Quick start
 
-```sh
-# recreate this project
-npx sv@0.16.5 create --template minimal --types ts --add tailwindcss="plugins:none" --no-download-check --no-install .
-```
+If it’s deployed, open the link above. That’s it.
 
-## Developing
+To run it yourself:
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
+```bash
+npm install
+cp .env.example .env
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
+Open [http://localhost:5173](http://localhost:5173). Needs **Node 20+**.
 
-To create a production version of your app:
+### Environment
 
-```sh
-npm run build
+Put these in `.env` (see `.env.example`):
+
+| Variable | What it’s for |
+|---|---|
+| `GEMINI_API_KEYS` | Comma-separated Gemini keys. The app rotates through them when one fails. |
+| `TMDB_API_KEY` | Posters, similar-title search, and “where to watch” providers. |
+| `TMDB_WATCH_REGION` | Fallback region only — users pick their own in the UI. |
+
+No keys? It still runs off a small local catalog. Recommendations get smarter once Gemini + TMDB are set. Song mode needs Gemini.
+
+---
+
+## Features
+
+- Pick a format (movies, series, anime, songs, or all) and multi-select genres
+- Free-text vibe prompt *and/or* “similar to…” titles with live search
+- Region-aware streaming provider logos (from TMDB / JustWatch data)
+- Dual UI themes — dark minimal or light desktop board — remembered in localStorage
+- Listen links for songs (Apple Music / Spotify-style search) via iTunes
+- Falls back to a curated catalog when external APIs flake
+
+---
+
+## How it works
+
+Recommendations don’t all go through one path. The backend picks the least-fake option for what you asked:
+
+1. **Songs** → Gemini suggests tracks → iTunes fills covers and listen URLs  
+2. **“Like this title”** → TMDB similar / recommendations, filtered by your genres  
+3. **Vibe / genres** → Gemini concierge (strict JSON) → TMDB for posters + providers  
+4. **Anything fails** → score a local catalog by format, genres, and vibe keywords  
+
+Gemini is great at *taste* and terrible at *valid JSON*, so there’s a repair pass for fences, curly quotes, and trailing commas. Keys rotate with a short cooldown when one burns out. Genres on a result are the title’s real tags — never a copy of whatever you clicked in the UI.
+
+Stack: SvelteKit 2 + Svelte 5, Tailwind 4, Gemini Flash, TMDB, iTunes Search.
+
+---
+
+## Scripts
+
+```bash
+npm run dev      # local server
+npm run build    # production build
+npm run preview  # preview the build
+npm run check    # svelte-check / types
 ```
 
-You can preview the production build with `npm run preview`.
+---
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Credits
+
+- [The Movie Database (TMDB)](https://www.themoviedb.org/) for search, similar titles, posters, and watch providers  
+- [Google Gemini](https://ai.google.dev/) for the concierge prompts  
+- [Apple iTunes Search API](https://affiliate.itunes.apple.com/resources/documentation/itunes-store-web-service-search-api/) for music lookup  
+- [SvelteKit](https://svelte.dev/docs/kit) + [Tailwind CSS](https://tailwindcss.com/)
+
+**AI usage:** under 19%.
