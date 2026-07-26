@@ -1,9 +1,11 @@
 // tmdb watch providers — /movie/{id}/watch/providers or /tv/{id}/watch/providers
 // needs TMDB_API_KEY in .env
+// Deep links come from JustWatch GraphQL (same destinations as TMDB's click.justwatch.com links).
 
 import { env } from '$env/dynamic/private';
 import { normalizeRegion } from '$lib/regions';
 import { providerOfferUrl } from '$lib/watchLinks';
+import { fetchJustWatchProviders } from '$lib/server/justwatchOffers';
 
 const IMG = 'https://image.tmdb.org/t/p/w92';
 
@@ -24,30 +26,46 @@ function logoUrl(path: string | null | undefined) {
 	return `${IMG}${path}`;
 }
 
-/**
- * Grab streaming / rent / buy providers for a title in a region.
- * Keeps Stream / Rent / Buy separate (same service can appear in rent AND buy).
- */
-export async function fetchWatchProviders(opts: {
+function normalizeName(name: string) {
+	return name
+		.toLowerCase()
+		.replace(/\+/g, ' plus ')
+		.replace(/\b(store|video|movies?)\b/g, ' ')
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+/** Prefer TMDB logos when we can match a JustWatch offer to a TMDB provider. */
+function mergeTmdbLogos(
+	jwProviders: WatchProvider[],
+	tmdbProviders: WatchProvider[]
+): WatchProvider[] {
+	return jwProviders.map((p) => {
+		const key = normalizeName(p.name);
+		const hit = tmdbProviders.find((t) => {
+			const tk = normalizeName(t.name);
+			return tk === key || tk.includes(key) || key.includes(tk);
+		});
+		return hit?.logo ? { ...p, logo: hit.logo } : p;
+	});
+}
+
+async function fetchTmdbProviderBuckets(opts: {
 	tmdbId: number;
 	mediaType: 'movie' | 'tv';
-	region?: string | null;
+	region: string;
 	title?: string | null;
-}): Promise<{ region: string; providers: WatchProvider[]; watchLink: string | null }> {
-	const region = getWatchRegion(opts.region);
+}): Promise<{ watchLink: string | null; providers: WatchProvider[] }> {
 	const apiKey = env.TMDB_API_KEY || env.TMDB_READ_ACCESS_TOKEN;
-
 	if (!apiKey || !opts.tmdbId) {
-		return { region, providers: [], watchLink: null };
+		return { watchLink: null, providers: [] };
 	}
 
 	const kind = opts.mediaType === 'movie' ? 'movie' : 'tv';
-	// v3 API key as query param — also works with bearer for read token but keeping it simple
 	const url = `https://api.themoviedb.org/3/${kind}/${opts.tmdbId}/watch/providers?api_key=${apiKey}`;
 
 	try {
 		const headers: Record<string, string> = { Accept: 'application/json' };
-		// if they pasted a JWT-ish read access token instead of api key
 		if (apiKey.startsWith('eyJ')) {
 			headers.Authorization = `Bearer ${apiKey}`;
 		}
@@ -61,17 +79,15 @@ export async function fetchWatchProviders(opts: {
 
 		if (!res.ok) {
 			console.warn('tmdb providers fail', res.status);
-			return { region, providers: [], watchLink: null };
+			return { watchLink: null, providers: [] };
 		}
 
 		const data = await res.json();
-		const country = data?.results?.[region] || data?.results?.US || null;
+		const country = data?.results?.[opts.region] || data?.results?.US || null;
 		if (!country) {
-			return { region, providers: [], watchLink: null };
+			return { watchLink: null, providers: [] };
 		}
 
-		// TMDB returns a locale watch page (not per-provider deep links).
-		// That page has working Stream/Rent/Buy click-throughs via JustWatch.
 		const watchLink: string | null = country.link || null;
 		const buckets: Array<{ key: keyof typeof country; type: WatchProvider['type'] }> = [
 			{ key: 'flatrate', type: 'flatrate' },
@@ -94,7 +110,6 @@ export async function fetchWatchProviders(opts: {
 				providers.push({
 					name,
 					logo: logoUrl(p.logo_path),
-					// Prefer a provider search/home URL; fall back to TMDB watch page
 					url: providerOfferUrl({
 						providerName: name,
 						title: opts.title || '',
@@ -105,9 +120,51 @@ export async function fetchWatchProviders(opts: {
 			}
 		}
 
-		return { region, providers, watchLink };
+		return { watchLink, providers };
 	} catch (e) {
 		console.warn('tmdb providers blew up', e);
-		return { region, providers: [], watchLink: null };
+		return { watchLink: null, providers: [] };
 	}
+}
+
+/**
+ * Grab streaming / rent / buy providers for a title in a region.
+ * Prefers JustWatch deep links (same destinations as TMDB's affiliate clicks);
+ * falls back to TMDB logos + search URLs when JustWatch is unavailable.
+ */
+export async function fetchWatchProviders(opts: {
+	tmdbId: number;
+	mediaType: 'movie' | 'tv';
+	region?: string | null;
+	title?: string | null;
+}): Promise<{ region: string; providers: WatchProvider[]; watchLink: string | null }> {
+	const region = getWatchRegion(opts.region);
+	const title = opts.title?.trim() || '';
+
+	const [tmdb, jw] = await Promise.all([
+		fetchTmdbProviderBuckets({
+			tmdbId: opts.tmdbId,
+			mediaType: opts.mediaType,
+			region,
+			title
+		}),
+		title
+			? fetchJustWatchProviders({
+					tmdbId: opts.tmdbId,
+					mediaType: opts.mediaType,
+					region,
+					title
+				})
+			: Promise.resolve(null)
+	]);
+
+	if (jw?.providers?.length) {
+		return {
+			region,
+			providers: mergeTmdbLogos(jw.providers, tmdb.providers),
+			watchLink: tmdb.watchLink
+		};
+	}
+
+	return { region, providers: tmdb.providers, watchLink: tmdb.watchLink };
 }
