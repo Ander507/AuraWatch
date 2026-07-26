@@ -472,7 +472,8 @@ export const POST: RequestHandler = async ({ request }) => {
 						const watch = await fetchWatchProviders({
 							tmdbId: similar.id,
 							mediaType: similar.mediaType,
-							region
+							region,
+							title: similar.title
 						});
 						const mediaType = mediaLabelFromTmdb(similar.mediaType, selectedType);
 						const searchQuery = similar.year
@@ -497,6 +498,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							media_type: selectedType === 'all' ? undefined : selectedType,
 							region: watch.region,
 							providers: watch.providers,
+							watch_link: watch.watchLink,
 							zflix_url: getZflixUrl(similar.title),
 							likeTitle: similar.referenceTitle,
 							likeTitles: similar.referenceTitles
@@ -558,9 +560,10 @@ export const POST: RequestHandler = async ({ request }) => {
 							? await fetchWatchProviders({
 									tmdbId,
 									mediaType: tmdbKind,
-									region
+									region,
+									title: rec.title
 								})
-							: { region, providers: [], justWatchLink: null };
+							: { region, providers: [], watchLink: null };
 
 					return {
 						title: rec.title,
@@ -576,6 +579,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						media_type: selectedType === 'all' ? undefined : selectedType,
 						region: watch.region,
 						providers: watch.providers,
+						watch_link: watch.watchLink,
 						zflix_url: getZflixUrl(rec.title),
 						likeTitle: likeLabel || undefined,
 						likeTitles: likeTitles.length ? likeTitles : undefined
@@ -638,7 +642,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			const watch = await fetchWatchProviders({
 				tmdbId: tmdb?.id || hit.tmdbId,
 				mediaType: tmdb?.mediaType || hit.mediaType,
-				region
+				region,
+				title: hit.title
 			});
 			const pitch = likeTitles.length
 				? `If you liked ${likeLabel}, ${hit.title} is a close neighbor in our local catalog.`
@@ -659,6 +664,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				media_type: hit.format,
 				region: watch.region,
 				providers: watch.providers,
+				watch_link: watch.watchLink,
 				zflix_url: getZflixUrl(hit.title),
 				likeTitle: likeLabel || undefined,
 				likeTitles: likeTitles.length ? likeTitles : undefined

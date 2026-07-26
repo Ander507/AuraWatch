@@ -113,6 +113,13 @@
 	let errMsg = $state('');
 	let clockLabel = $state('');
 
+	type Provider = {
+		name: string;
+		logo: string | null;
+		url?: string | null;
+		type?: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
+	};
+
 	type Rec = {
 		title: string;
 		cover: string;
@@ -121,8 +128,9 @@
 		mediaType?: string;
 		seasonInfo?: string;
 		rating?: number;
-		providers?: { name: string; logo: string | null; url?: string | null }[];
+		providers?: Provider[];
 		region?: string;
+		watchLink?: string | null;
 		likeTitle?: string;
 		likeTitles?: string[];
 		coverBroken?: boolean;
@@ -218,6 +226,7 @@
 			rating: raw?.rating,
 			providers: raw?.providers || [],
 			region: raw?.region,
+			watchLink: raw?.watch_link || raw?.watchLink || null,
 			likeTitle: raw?.likeTitle || (likeTitles.length ? likeTitles.join(', ') : undefined),
 			likeTitles: raw?.likeTitles || (likeTitles.length ? likeTitles : undefined),
 			coverBroken: false,
@@ -226,6 +235,30 @@
 			// listen_url preferred; zflix_url was an older name, keep both just in case
 			listen_url: raw?.listen_url || raw?.zflix_url
 		};
+	}
+
+	type ProviderGroup = { label: string; items: Provider[] };
+
+	/** Group TMDB providers into Stream / Rent / Buy like the TMDB watch page. */
+	function providerGroups(providers: Provider[] | undefined): ProviderGroup[] {
+		if (!providers?.length) return [];
+		const hasTypes = providers.some((p) => p.type);
+		if (!hasTypes) {
+			return [{ label: '', items: providers }];
+		}
+
+		const buckets: Array<{ label: string; types: NonNullable<Provider['type']>[] }> = [
+			{ label: 'Stream', types: ['flatrate', 'ads', 'free'] },
+			{ label: 'Rent', types: ['rent'] },
+			{ label: 'Buy', types: ['buy'] }
+		];
+
+		return buckets
+			.map((b) => ({
+				label: b.label,
+				items: providers.filter((p) => p.type && b.types.includes(p.type))
+			}))
+			.filter((g) => g.items.length > 0);
 	}
 
 	function formatClock(d = new Date()) {
@@ -561,46 +594,91 @@
 
 							<div class="where-watch">
 								<div class="watch-heading">
-									<span class="watch-label">{song ? 'Listen' : 'Where to Watch'}</span>
+									{#if item.watchLink && !song}
+										<a
+											class="watch-label watch-label-link"
+											href={item.watchLink}
+											target="_blank"
+											rel="external noopener noreferrer"
+										>
+											Where to Watch
+										</a>
+									{:else}
+										<span class="watch-label">{song ? 'Listen' : 'Where to Watch'}</span>
+									{/if}
 									{#if item.region && !song}
 										<span class="watch-region">{item.region}</span>
 									{/if}
 								</div>
 								{#if item.providers?.length}
-									<div class="provider-row" class:provider-row-text={song}>
-										{#each item.providers as p, pi (p.name + String(pi))}
-											{#if p.url}
-												<a
-													class="provider-btn"
-													class:provider-text={song}
-													href={p.url}
-													target="_blank"
-													rel="external noopener noreferrer"
-													title={p.name}
-													aria-label={p.name}
-												>
-													{#if p.logo && !song}
-														<img src={p.logo} alt="" class="provider-logo" />
-													{:else}
-														<span class="provider-fallback">{song ? p.name : p.name.slice(0, 2)}</span>
+									{#if song}
+										<div class="provider-row provider-row-text">
+											{#each item.providers as p, pi (p.name + String(pi))}
+												{#if p.url}
+													<a
+														class="provider-btn provider-text"
+														href={p.url}
+														target="_blank"
+														rel="external noopener noreferrer"
+														title={p.name}
+														aria-label={p.name}
+													>
+														<span class="provider-fallback">{p.name}</span>
+													</a>
+												{:else}
+													<span
+														class="provider-btn provider-text"
+														title={p.name}
+														aria-label={p.name}
+													>
+														<span class="provider-fallback">{p.name}</span>
+													</span>
+												{/if}
+											{/each}
+										</div>
+									{:else}
+										<div class="provider-groups">
+											{#each providerGroups(item.providers) as group (group.label)}
+												<div class="provider-group">
+													{#if group.label}
+														<span class="provider-category">{group.label}</span>
 													{/if}
-												</a>
-											{:else}
-												<span
-													class="provider-btn"
-													class:provider-text={song}
-													title={p.name}
-													aria-label={p.name}
-												>
-													{#if p.logo && !song}
-														<img src={p.logo} alt="" class="provider-logo" />
-													{:else}
-														<span class="provider-fallback">{song ? p.name : p.name.slice(0, 2)}</span>
-													{/if}
-												</span>
-											{/if}
-										{/each}
-									</div>
+													<div class="provider-row">
+														{#each group.items as p, pi (p.name + (p.type || '') + String(pi))}
+															{#if p.url}
+																<a
+																	class="provider-btn"
+																	href={p.url}
+																	target="_blank"
+																	rel="external noopener noreferrer"
+																	title={p.name}
+																	aria-label="{group.label ? `${group.label}: ` : ''}{p.name}"
+																>
+																	{#if p.logo}
+																		<img src={p.logo} alt="" class="provider-logo" />
+																	{:else}
+																		<span class="provider-fallback">{p.name.slice(0, 2)}</span>
+																	{/if}
+																</a>
+															{:else}
+																<span
+																	class="provider-btn"
+																	title={p.name}
+																	aria-label="{group.label ? `${group.label}: ` : ''}{p.name}"
+																>
+																	{#if p.logo}
+																		<img src={p.logo} alt="" class="provider-logo" />
+																	{:else}
+																		<span class="provider-fallback">{p.name.slice(0, 2)}</span>
+																	{/if}
+																</span>
+															{/if}
+														{/each}
+													</div>
+												</div>
+											{/each}
+										</div>
+									{/if}
 								{/if}
 								{#if song}
 									<a
@@ -1470,6 +1548,32 @@
 		font-size: 0.65rem;
 		color: var(--muted);
 	}
+	.desktop .watch-label-link {
+		text-decoration: none;
+		color: var(--muted);
+	}
+	.desktop .watch-label-link:hover {
+		color: var(--accent);
+	}
+	.desktop .provider-groups {
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		width: 100%;
+	}
+	.desktop .provider-group {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.3rem;
+	}
+	.desktop .provider-category {
+		font-size: 0.62rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--ink);
+	}
 	.desktop .provider-row {
 		display: flex;
 		flex-wrap: wrap;
@@ -2093,6 +2197,32 @@
 	.minimal .watch-region {
 		font-size: 0.7rem;
 		color: var(--muted);
+	}
+	.minimal .watch-label-link {
+		text-decoration: none;
+		color: var(--muted);
+	}
+	.minimal .watch-label-link:hover {
+		color: var(--accent);
+	}
+	.minimal .provider-groups {
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+		width: 100%;
+	}
+	.minimal .provider-group {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.35rem;
+	}
+	.minimal .provider-category {
+		font-size: 0.68rem;
+		font-weight: 650;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--ink);
 	}
 	.minimal .provider-row {
 		display: flex;
