@@ -4,8 +4,10 @@
 	import { onMount } from 'svelte';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
+	import { desktopCardEntrance } from '$lib/animations/desktop';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
+	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 
 	const REGION_KEY = 'aurawatch_region';
 	const UI_KEY = 'aurawatch_ui';
@@ -13,30 +15,40 @@
 	type UiTheme = 'desktop' | 'minimal';
 
 	const FORMAT_OPTIONS = [
-		{ id: 'all' as const, label: 'All' },
 		{ id: 'movie' as const, label: 'Movies' },
 		{ id: 'series' as const, label: 'TV Series' },
 		{ id: 'anime' as const, label: 'Anime' },
 		{ id: 'songs' as const, label: 'Songs' }
 	];
 
+	const DECADE_OPTIONS = [
+		{ id: '' as const, label: 'Any' },
+		{ id: '1980s' as const, label: '1980s' },
+		{ id: '1990s' as const, label: '1990s' },
+		{ id: '2000s' as const, label: '2000s' },
+		{ id: '2010s' as const, label: '2010s' },
+		{ id: '2020s' as const, label: '2020s' }
+	];
+
 	type FormatId = (typeof FORMAT_OPTIONS)[number]['id'];
 
+	const ALL_MEDIA_GENRES = [
+		'Action',
+		'Comedy',
+		'Drama',
+		'Horror',
+		'Psychological',
+		'Sci-Fi',
+		'Thriller',
+		'Romance',
+		'Fantasy',
+		'Mystery',
+		'Crime',
+		'Western',
+		'Slice of Life'
+	];
+
 	const GENRES_BY_FORMAT: Record<FormatId, string[]> = {
-		all: [
-			'Action',
-			'Comedy',
-			'Drama',
-			'Horror',
-			'Psychological',
-			'Sci-Fi',
-			'Thriller',
-			'Romance',
-			'Fantasy',
-			'Mystery',
-			'Crime',
-			'Slice of Life'
-		],
 		movie: [
 			'Action',
 			'Comedy',
@@ -46,6 +58,7 @@
 			'Sci-Fi',
 			'Romance',
 			'Crime',
+			'Western',
 			'Documentary',
 			'Fantasy',
 			'Mystery',
@@ -59,6 +72,7 @@
 			'Sci-Fi',
 			'Horror',
 			'Mystery',
+			'Western',
 			'Documentary',
 			'Heist',
 			'Political',
@@ -103,15 +117,19 @@
 		]
 	};
 
-	let uiTheme = $state<UiTheme>('minimal');
-	let selectedType = $state<FormatId>('all');
+	let uiTheme = $state<UiTheme>('desktop');
+	let selectedTypes = $state<FormatId[]>([]);
 	let selectedGenres = $state<string[]>([]);
 	let vibePrompt = $state('');
 	let likeTitles = $state<string[]>([]);
+	const NOTES_WEIGHT_DEFAULT = 70;
+	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
 	let watchRegion = $state('US');
+	let selectedDecade = $state('');
 	let isLoading = $state(false);
 	let errMsg = $state('');
 	let clockLabel = $state('');
+	let playingPreview = $state<string | null>(null); // unique key per card
 
 	type Provider = {
 		name: string;
@@ -133,24 +151,39 @@
 		watchLink?: string | null;
 		likeTitle?: string;
 		likeTitles?: string[];
+		coverFallbacks?: string[];
 		coverBroken?: boolean;
 		artist?: string;
 		kind?: 'song' | 'media';
 		listen_url?: string;
+		preview_url?: string;
+		trailer_youtube_key?: string;
 	};
 
 	// song mode — different search kind + square covers etc
-	let isSongs = $derived(selectedType === 'songs');
+	let isSongs = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'songs');
 
 	let results = $state<Rec[]>([]);
 
-	let visibleGenres = $derived(GENRES_BY_FORMAT[selectedType]);
+	let visibleGenres = $derived.by(() => {
+		if (isSongs) return GENRES_BY_FORMAT.songs;
+		if (!selectedTypes.length) return ALL_MEDIA_GENRES;
+		const set = new Set<string>();
+		for (const t of selectedTypes) {
+			for (const g of GENRES_BY_FORMAT[t]) set.add(g);
+		}
+		return [...set];
+	});
 
 	let canSubmit = $derived(
 		Boolean(vibePrompt.trim()) ||
 			likeTitles.length > 0 ||
 			selectedGenres.length > 0 ||
-			selectedType !== 'all'
+			selectedTypes.length > 0
+	);
+
+	let notesWeightLabel = $derived(
+		notesWeight <= 35 ? 'Similar-to leads' : notesWeight <= 55 ? 'Balanced' : 'Notes lead'
 	);
 
 	/** Actual API genres only — never parrot user picks */
@@ -199,17 +232,25 @@
 		return item.kind === 'song' || item.mediaType === 'Song';
 	}
 
-	function coverFallbackLabel(title: string): string {
-		const t = title?.trim() || '?';
-		const parts = t.split(/\s+/).filter(Boolean);
-		if (parts.length >= 2) {
-			return (parts[0][0] + parts[1][0]).toUpperCase();
-		}
-		return t.slice(0, 3).toUpperCase();
+	function previewKey(item: Rec, i: number) {
+		return `${item.title}::${i}`;
 	}
 
-	function markCoverBroken(index: number) {
-		results = results.map((r, j) => (j === index ? { ...r, coverBroken: true } : r));
+	function toggleTrailer(item: Rec, i: number) {
+		const key = previewKey(item, i);
+		playingPreview = playingPreview === key ? null : key;
+	}
+
+	function onCoverError(index: number) {
+		results = results.map((r, j) => {
+			if (j !== index) return r;
+			const fallbacks = r.coverFallbacks?.length ? [...r.coverFallbacks] : [];
+			if (fallbacks.length > 0) {
+				const next = fallbacks.shift()!;
+				return { ...r, cover: next, coverFallbacks: fallbacks, coverBroken: false };
+			}
+			return { ...r, coverBroken: true };
+		});
 	}
 
 	function normalizeRec(raw: Record<string, any> | null | undefined): Rec {
@@ -229,11 +270,16 @@
 			watchLink: raw?.watch_link || raw?.watchLink || null,
 			likeTitle: raw?.likeTitle || (likeTitles.length ? likeTitles.join(', ') : undefined),
 			likeTitles: raw?.likeTitles || (likeTitles.length ? likeTitles : undefined),
+			coverFallbacks: Array.isArray(raw?.coverFallbacks)
+				? raw.coverFallbacks.filter(Boolean)
+				: [],
 			coverBroken: false,
 			artist: raw?.artist,
 			kind,
 			// listen_url preferred; zflix_url was an older name, keep both just in case
-			listen_url: raw?.listen_url || raw?.zflix_url
+			listen_url: raw?.listen_url || raw?.zflix_url,
+			preview_url: raw?.preview_url || raw?.previewUrl || undefined,
+			trailer_youtube_key: raw?.trailer_youtube_key || raw?.trailerYoutubeKey || undefined
 		};
 	}
 
@@ -331,15 +377,23 @@
 		}
 	}
 
-	function setFormat(id: FormatId) {
-		const prev = selectedType;
-		selectedType = id;
-		const allowed = GENRES_BY_FORMAT[id];
+	function toggleFormat(id: FormatId) {
+		const wasSongs = selectedTypes.length === 1 && selectedTypes[0] === 'songs';
+		let next: FormatId[];
+		if (id === 'songs') next = ['songs'];
+		else if (wasSongs) next = [id];
+		else if (selectedTypes.includes(id)) next = selectedTypes.filter((t) => t !== id);
+		else next = [...selectedTypes, id];
+
+		selectedTypes = next;
+		const nowSongs = next.length === 1 && next[0] === 'songs';
+		const allowed = nowSongs
+			? GENRES_BY_FORMAT.songs
+			: next.length
+				? [...new Set(next.flatMap((t) => GENRES_BY_FORMAT[t]))]
+				: ALL_MEDIA_GENRES;
 		selectedGenres = selectedGenres.filter((g) => allowed.includes(g));
-		// media ↔ songs like-titles dont mix — wipe em when flipping
-		if ((prev === 'songs') !== (id === 'songs')) {
-			likeTitles = [];
-		}
+		if (wasSongs !== nowSongs) likeTitles = [];
 	}
 
 	function toggleGenre(g: string) {
@@ -361,17 +415,20 @@
 
 		isLoading = true;
 		results = [];
+		playingPreview = null;
 
 		try {
 			const res = await fetch('/api/recommend', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					type: selectedType,
+					types: selectedTypes,
 					genres: selectedGenres,
 					prompt: vibePrompt,
 					likeTitles: likeTitles.length ? likeTitles : undefined,
-					region: watchRegion
+					notesWeight,
+					region: watchRegion,
+					decade: selectedDecade || undefined
 				})
 			});
 
@@ -433,9 +490,9 @@
 					<button
 						type="button"
 						class="segment-btn"
-						class:active={selectedType === opt.id}
-						aria-pressed={selectedType === opt.id}
-						onclick={() => setFormat(opt.id)}
+						class:active={selectedTypes.includes(opt.id)}
+						aria-pressed={selectedTypes.includes(opt.id)}
+						onclick={() => toggleFormat(opt.id)}
 						disabled={isLoading}
 					>
 						{opt.label}
@@ -458,6 +515,24 @@
 					>
 						<span class="genre-mark" aria-hidden="true"></span>
 						{g}
+					</button>
+				{/each}
+			</div>
+		</div>
+
+		<div class="field">
+			<span class="field-label" id="decade-label">Decade / Era</span>
+			<div class="segment decade-segment" role="group" aria-labelledby="decade-label">
+				{#each DECADE_OPTIONS as opt (opt.id || 'any')}
+					<button
+						type="button"
+						class="segment-btn"
+						class:active={selectedDecade === opt.id}
+						aria-pressed={selectedDecade === opt.id}
+						onclick={() => (selectedDecade = opt.id)}
+						disabled={isLoading}
+					>
+						{opt.label}
 					</button>
 				{/each}
 			</div>
@@ -499,6 +574,35 @@
 			></textarea>
 		</div>
 
+		<div class="field weight-field">
+			<div class="weight-label-row">
+				<label class="field-label" for="notes-weight">Match priority</label>
+				<span class="weight-value">{notesWeightLabel} · {notesWeight}</span>
+			</div>
+			<div class="weight-slider-row">
+				<span class="weight-end" aria-hidden="true">Similar-to</span>
+				<input
+					id="notes-weight"
+					class="weight-slider"
+					type="range"
+					min="0"
+					max="100"
+					step="5"
+					value={notesWeight}
+					oninput={(e) => {
+						notesWeight = Number(e.currentTarget.value);
+					}}
+					disabled={isLoading}
+				/>
+				<span class="weight-end" aria-hidden="true">Notes</span>
+			</div>
+			<p class="field-hint">
+				{likeTitles.length
+					? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
+					: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
+			</p>
+		</div>
+
 		{#if !isSongs}
 			<div class="field region-field">
 				<label class="field-label" for="region">Streaming region</label>
@@ -533,15 +637,15 @@
 {#snippet resultContent()}
 	{#if isLoading}
 		<div class="loading-block" transition:fade={{ duration: 250 }}>
-			<div class="progress-track" aria-hidden="true">
-				<div class="progress-bar"></div>
-			</div>
-			<p class="loading-hint">{uiTheme === 'minimal' ? 'Searching…' : 'searching…'}</p>
+			<DesktopLoading
+				hint={uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
+				variant={uiTheme}
+			/>
 		</div>
 	{:else if results.length}
 		<div
 			class="rec-list"
-			in:fly={{ y: 10, duration: 320, easing: quintOut }}
+			in:fly={{ y: uiTheme === 'desktop' ? 0 : 10, duration: uiTheme === 'desktop' ? 0 : 320, easing: quintOut }}
 			out:fade={{ duration: 140 }}
 		>
 			<p class="rec-list-header">{results.length} picks</p>
@@ -549,7 +653,10 @@
 				{@const genres = itemGenres(item)}
 				{@const meta = itemMetaLine(item)}
 				{@const song = isSongRec(item)}
-				<article class="rec-card">
+				<article
+					class="rec-card"
+					{@attach uiTheme === 'desktop' && desktopCardEntrance(i)}
+				>
 					<div class="rec-grid">
 						<div class="cover-wrap" class:cover-square={song}>
 							{#if showCoverImg(item)}
@@ -563,11 +670,12 @@
 									loading="lazy"
 									decoding="async"
 									referrerpolicy="no-referrer"
-									onerror={() => markCoverBroken(i)}
+									onerror={() => onCoverError(i)}
 								/>
 							{:else}
 								<div class="cover-fallback" class:cover-square={song} aria-hidden="true">
-									<span class="cover-fallback-text">{coverFallbackLabel(item.title)}</span>
+									<span class="cover-fallback-mark">AW</span>
+									<span class="cover-fallback-brand">AuraWatch</span>
 									<span class="cover-fallback-title">{item.title}</span>
 								</div>
 							{/if}
@@ -591,6 +699,42 @@
 							{/if}
 
 							<p class="rec-pitch">{item.pitch}</p>
+
+							{#if song && item.preview_url}
+								<audio
+									class="media-preview audio-preview"
+									controls
+									preload="none"
+									src={item.preview_url}
+								></audio>
+							{:else if !song && item.trailer_youtube_key}
+								{#if playingPreview === previewKey(item, i)}
+									<div class="trailer-wrap">
+										<iframe
+											class="media-preview trailer-frame"
+											src={`https://www.youtube-nocookie.com/embed/${item.trailer_youtube_key}?autoplay=1&rel=0`}
+											title="Trailer"
+											allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+											allowfullscreen
+										></iframe>
+										<button
+											type="button"
+											class="preview-btn preview-close"
+											onclick={() => toggleTrailer(item, i)}
+										>
+											Close video
+										</button>
+									</div>
+								{:else}
+									<button
+										type="button"
+										class="preview-btn"
+										onclick={() => toggleTrailer(item, i)}
+									>
+										{item.mediaType === 'YouTube' ? 'Play video' : 'Play trailer'}
+									</button>
+								{/if}
+							{/if}
 
 							<div class="where-watch">
 								<div class="watch-heading">
@@ -689,7 +833,7 @@
 									>
 										Open listen link
 									</a>
-								{:else}
+								{:else if item.mediaType !== 'YouTube'}
 									<a
 										class="zflix-cta"
 										href={getZflixUrl(item.title)}
@@ -1130,13 +1274,55 @@
 		color: var(--muted);
 	}
 
+	.desktop .weight-label-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.desktop .weight-value {
+		font-size: 0.68rem;
+		font-weight: 600;
+		color: var(--accent);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.desktop .weight-slider-row {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		gap: 0.55rem;
+		align-items: center;
+	}
+
+	.desktop .weight-end {
+		font-size: 0.58rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+
+	.desktop .weight-slider {
+		width: 100%;
+		margin: 0;
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
+	.desktop .weight-slider:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
 	.desktop .region-field :global(.region-select) {
 		width: 100%;
 	}
 
 	.desktop .segment {
 		display: grid;
-		grid-template-columns: repeat(5, 1fr);
+		grid-template-columns: repeat(4, 1fr);
 		gap: 0;
 		border: 2px solid var(--line);
 		border-radius: 0;
@@ -1176,14 +1362,80 @@
 
 	@media (max-width: 560px) {
 		.desktop .segment {
-			grid-template-columns: repeat(3, 1fr);
+			grid-template-columns: repeat(2, 1fr);
 		}
-		.desktop .segment-btn:nth-child(3n) {
+		.desktop .segment-btn:nth-child(2n) {
 			border-right: none;
 		}
-		.desktop .segment-btn:nth-child(-n + 3) {
+		.desktop .segment-btn:nth-child(-n + 2) {
 			border-bottom: 2px solid var(--line);
 		}
+	}
+
+	.desktop .decade-segment {
+		grid-template-columns: repeat(6, 1fr);
+	}
+	@media (max-width: 560px) {
+		.desktop .decade-segment {
+			grid-template-columns: repeat(3, 1fr);
+		}
+		.desktop .decade-segment .segment-btn {
+			border-right: 2px solid var(--line);
+			border-bottom: 2px solid var(--line);
+		}
+		.desktop .decade-segment .segment-btn:nth-child(3n) {
+			border-right: none;
+		}
+		.desktop .decade-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
+		}
+	}
+
+	.desktop .media-preview.audio-preview {
+		display: block;
+		width: 100%;
+		max-width: 280px;
+		height: 32px;
+		margin-top: 0.75rem;
+	}
+	.desktop .trailer-wrap {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.4rem;
+		width: 100%;
+		max-width: 320px;
+		margin-top: 0.75rem;
+	}
+	.desktop .media-preview.trailer-frame {
+		display: block;
+		width: 100%;
+		aspect-ratio: 16 / 9;
+		border: 2px solid var(--line);
+		border-radius: 0;
+		background: #000;
+	}
+	.desktop .preview-btn {
+		appearance: none;
+		cursor: pointer;
+		margin-top: 0.75rem;
+		padding: 0.35rem 0.65rem;
+		border: 2px solid var(--line);
+		border-radius: 0;
+		background: transparent;
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.desktop .preview-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.desktop .preview-btn.preview-close {
+		margin-top: 0;
 	}
 
 	.desktop .genre-grid {
@@ -1375,29 +1627,8 @@
 
 	.desktop .loading-block {
 		width: 100%;
-		max-width: 18rem;
-	}
-
-	.desktop .progress-track {
-		height: 8px;
-		width: 100%;
-		background: #e8e8e8;
-		border: 2px solid var(--line);
-		border-radius: 0;
-		overflow: hidden;
-		box-sizing: border-box;
-	}
-	.desktop .progress-bar {
-		height: 100%;
-		width: 40%;
-		background: var(--accent);
-		animation: progress-slide 1.1s ease-in-out infinite;
-	}
-
-	.desktop .loading-hint {
-		margin: 0.7rem 0 0;
-		font-size: 0.8rem;
-		color: var(--accent);
+		display: flex;
+		justify-content: flex-start;
 	}
 
 	.desktop .rec-grid {
@@ -1457,19 +1688,35 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 0.45rem;
+		gap: 0.35rem;
 		width: 100%;
 		aspect-ratio: 2 / 3;
 		padding: 0.65rem;
 		box-sizing: border-box;
-		background: #f0f0f0;
+		background:
+			repeating-linear-gradient(
+				135deg,
+				transparent,
+				transparent 6px,
+				rgba(255, 76, 0, 0.07) 6px,
+				rgba(255, 76, 0, 0.07) 7px
+			),
+			linear-gradient(160deg, #fff8f4 0%, #f5ebe4 55%, #efe4dc 100%);
 		text-align: center;
 	}
-	.desktop .cover-fallback-text {
+	.desktop .cover-fallback-mark {
 		font-weight: 700;
-		font-size: 1.6rem;
-		letter-spacing: -0.03em;
+		font-size: 1.85rem;
+		letter-spacing: -0.04em;
 		color: var(--ink);
+		line-height: 1;
+	}
+	.desktop .cover-fallback-brand {
+		font-size: 0.55rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		color: var(--accent);
 		line-height: 1;
 	}
 	.desktop .cover-fallback-title {
@@ -1482,6 +1729,7 @@
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 		word-break: break-word;
+		margin-top: 0.15rem;
 	}
 
 	.desktop .rec-label {
@@ -1825,13 +2073,56 @@
 		color: var(--muted);
 	}
 
+	.minimal .weight-label-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.minimal .weight-value {
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--accent);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.minimal .weight-slider-row {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		gap: 0.6rem;
+		align-items: center;
+	}
+
+	.minimal .weight-end {
+		font-size: 0.62rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		white-space: nowrap;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+	}
+
+	.minimal .weight-slider {
+		width: 100%;
+		margin: 0;
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
+	.minimal .weight-slider:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
 	.minimal .region-field :global(.region-select) {
 		width: 100%;
 	}
 
 	.minimal .segment {
 		display: grid;
-		grid-template-columns: repeat(5, 1fr);
+		grid-template-columns: repeat(4, 1fr);
 		gap: 0;
 		border: 1px solid var(--line);
 		border-radius: 8px;
@@ -1871,14 +2162,78 @@
 
 	@media (max-width: 560px) {
 		.minimal .segment {
-			grid-template-columns: repeat(3, 1fr);
+			grid-template-columns: repeat(2, 1fr);
 		}
-		.minimal .segment-btn:nth-child(3n) {
+		.minimal .segment-btn:nth-child(2n) {
 			border-right: none;
 		}
-		.minimal .segment-btn:nth-child(-n + 3) {
+		.minimal .segment-btn:nth-child(-n + 2) {
 			border-bottom: 1px solid var(--line);
 		}
+	}
+
+	.minimal .decade-segment {
+		grid-template-columns: repeat(6, 1fr);
+	}
+	@media (max-width: 560px) {
+		.minimal .decade-segment {
+			grid-template-columns: repeat(3, 1fr);
+		}
+		.minimal .decade-segment .segment-btn {
+			border-right: 1px solid var(--line);
+			border-bottom: 1px solid var(--line);
+		}
+		.minimal .decade-segment .segment-btn:nth-child(3n) {
+			border-right: none;
+		}
+		.minimal .decade-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
+		}
+	}
+
+	.minimal .media-preview.audio-preview {
+		display: block;
+		width: 100%;
+		max-width: 280px;
+		height: 32px;
+		margin-top: 0.85rem;
+	}
+	.minimal .trailer-wrap {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.45rem;
+		width: 100%;
+		max-width: 320px;
+		margin-top: 0.85rem;
+	}
+	.minimal .media-preview.trailer-frame {
+		display: block;
+		width: 100%;
+		aspect-ratio: 16 / 9;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		background: #000;
+	}
+	.minimal .preview-btn {
+		appearance: none;
+		cursor: pointer;
+		margin-top: 0.85rem;
+		padding: 0.4rem 0.75rem;
+		border: 1px solid rgba(255, 255, 255, 0.18);
+		border-radius: 8px;
+		background: transparent;
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 500;
+	}
+	.minimal .preview-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.minimal .preview-btn.preview-close {
+		margin-top: 0;
 	}
 
 	.minimal .genre-grid {
@@ -2025,28 +2380,8 @@
 
 	.minimal .loading-block {
 		width: 100%;
-		max-width: 16rem;
-	}
-
-	.minimal .progress-track {
-		height: 3px;
-		width: 100%;
-		background: rgba(255, 255, 255, 0.08);
-		border: none;
-		border-radius: 2px;
-		overflow: hidden;
-	}
-	.minimal .progress-bar {
-		height: 100%;
-		width: 40%;
-		background: var(--accent);
-		animation: progress-slide 1.1s ease-in-out infinite;
-	}
-
-	.minimal .loading-hint {
-		margin: 0.75rem 0 0;
-		font-size: 0.85rem;
-		color: var(--muted);
+		display: flex;
+		justify-content: flex-start;
 	}
 
 	.minimal .rec-grid {
@@ -2107,19 +2442,32 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 0.45rem;
+		gap: 0.35rem;
 		width: 100%;
 		aspect-ratio: 2 / 3;
 		padding: 0.65rem;
 		box-sizing: border-box;
-		background: var(--panel);
+		background: linear-gradient(
+			160deg,
+			#1a1a22 0%,
+			#14141a 45%,
+			rgba(139, 124, 247, 0.18) 100%
+		);
 		text-align: center;
 	}
-	.minimal .cover-fallback-text {
+	.minimal .cover-fallback-mark {
 		font-weight: 700;
-		font-size: 1.5rem;
-		letter-spacing: -0.03em;
+		font-size: 1.75rem;
+		letter-spacing: -0.04em;
 		color: var(--ink);
+		line-height: 1;
+	}
+	.minimal .cover-fallback-brand {
+		font-size: 0.58rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		color: var(--accent);
 		line-height: 1;
 	}
 	.minimal .cover-fallback-title {
@@ -2132,6 +2480,7 @@
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 		word-break: break-word;
+		margin-top: 0.15rem;
 	}
 
 	.minimal .rec-label {
@@ -2305,30 +2654,14 @@
 		}
 	}
 
-	@keyframes progress-slide {
-		0% {
-			transform: translateX(-120%);
-		}
-		100% {
-			transform: translateX(320%);
-		}
-	}
-
 	@media (prefers-reduced-motion: reduce) {
 		.desktop .brand,
 		.minimal .min-brand {
 			animation: none;
 		}
 		.desktop .spinner,
-		.desktop .progress-bar,
-		.minimal .spinner,
-		.minimal .progress-bar {
+		.minimal .spinner {
 			animation: none;
-		}
-		.desktop .progress-bar,
-		.minimal .progress-bar {
-			width: 100%;
-			opacity: 0.7;
 		}
 	}
 </style>

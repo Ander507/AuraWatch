@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { searchTmdbTitles } from '$lib/server/tmdbSearch';
 import { searchItunesMusic } from '$lib/server/itunesSearch';
+import { fetchOnMyOwnTrack, isSurronSongSecret } from '$lib/server/easterEggs';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const q = (url.searchParams.get('q') || url.searchParams.get('query') || '').trim();
@@ -19,6 +20,31 @@ export const GET: RequestHandler = async ({ url }) => {
 	if (!Number.isFinite(limit)) limit = 8;
 
 	if (kind === 'music' || kind === 'song' || kind === 'songs') {
+		// 🤫 Surron / Talaria → only On My Own
+		if (isSurronSongSecret(q)) {
+			const track = await fetchOnMyOwnTrack();
+			if (track) {
+				return json({
+					ok: true,
+					query: q,
+					kind: 'music',
+					total: 1,
+					results: [
+						{
+							id: track.id,
+							mediaType: 'song' as const,
+							title: track.title,
+							subtitle: track.artist,
+							posterUrl: track.cover,
+							year: track.year,
+							rating: null,
+							kindLabel: 'SONG' as const
+						}
+					]
+				});
+			}
+		}
+
 		const { results, total } = await searchItunesMusic(q, { limit });
 		// flatten to the same shape the dropdown expects
 		const mapped = [];

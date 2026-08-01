@@ -1,10 +1,13 @@
 // TMDB "similar to X" — find a grounded neighbor for a reference title
 
 import { env } from '$env/dynamic/private';
-import type { SelectedType } from '$lib/server/catalog';
-import { parseSearchQuery } from '$lib/server/tmdbSearch';
-
-const POSTER = 'https://image.tmdb.org/t/p/w500';
+import {
+	catalogFormats,
+	type MediaFormat,
+	type SelectedType,
+	type SelectedTypes
+} from '$lib/server/catalog';
+import { parseSearchQuery, resolveTmdbArtwork, tmdbImageUrl } from '$lib/server/tmdbSearch';
 
 /** TMDB genre ids we care about for filtering */
 const GENRE = {
@@ -51,6 +54,8 @@ const USER_GENRE_TO_TMDB: Record<string, number[]> = {
 	'sci-fi': [GENRE.scifi, GENRE.scifiFantasy],
 	scifi: [GENRE.scifi, GENRE.scifiFantasy],
 	thriller: [GENRE.thriller],
+	western: [GENRE.western],
+	war: [GENRE.war],
 	political: [GENRE.warPolitics],
 	medical: [GENRE.drama],
 	heist: [GENRE.crime, GENRE.action],
@@ -59,6 +64,55 @@ const USER_GENRE_TO_TMDB: Record<string, number[]> = {
 	'slice of life': [GENRE.drama, GENRE.comedy],
 	school: [GENRE.drama, GENRE.comedy]
 };
+
+/** Strong vibe phrases in free-text notes → TMDB genre ids that picks MUST respect. */
+const NOTE_VIBE_RULES: Array<{ re: RegExp; genreIds: number[]; keywords: string[] }> = [
+	{
+		re: /\b(westerns?|cowboy|cowboys|cowgirl|outlaw|outlaws|gunslinger|saloon|frontier|wild\s*west)\b/i,
+		genreIds: [GENRE.western],
+		keywords: ['western', 'cowboy', 'outlaw', 'frontier', 'ranch', 'gunslinger']
+	},
+	{
+		re: /\b(horror|scary|ghost|vampire|slasher)\b/i,
+		genreIds: [GENRE.horror],
+		keywords: ['horror', 'scary', 'terror']
+	},
+	{
+		re: /\b(sci-?fi|science fiction|space opera|cyberpunk)\b/i,
+		genreIds: [GENRE.scifi, GENRE.scifiFantasy],
+		keywords: ['sci-fi', 'science fiction', 'space', 'cyberpunk']
+	},
+	{
+		re: /\b(rom-?com|romantic comedy)\b/i,
+		genreIds: [GENRE.romance, GENRE.comedy],
+		keywords: ['romance', 'romantic', 'love']
+	},
+	{
+		re: /\b(heist|caper)\b/i,
+		genreIds: [GENRE.crime],
+		keywords: ['heist', 'robbery', 'caper']
+	}
+];
+
+function extractNoteVibes(notes: string): { genreIds: number[]; keywords: string[] } {
+	const genreIds = new Set<number>();
+	const keywords = new Set<string>();
+	const text = notes || '';
+	if (!text.trim()) return { genreIds: [], keywords: [] };
+	for (const rule of NOTE_VIBE_RULES) {
+		if (!rule.re.test(text)) continue;
+		for (const id of rule.genreIds) genreIds.add(id);
+		for (const k of rule.keywords) keywords.add(k);
+	}
+	return { genreIds: [...genreIds], keywords: [...keywords] };
+}
+
+function hitMatchesVibe(hit: RawHit, vibes: { genreIds: number[]; keywords: string[] }): boolean {
+	if (!vibes.genreIds.length && !vibes.keywords.length) return true;
+	if (vibes.genreIds.some((id) => hit.genre_ids.includes(id))) return true;
+	const blob = `${hit.title} ${hit.overview}`.toLowerCase();
+	return vibes.keywords.some((k) => blob.includes(k));
+}
 
 function authHeaders(): { headers: Record<string, string>; useBearer: boolean; apiKey: string } {
 	const apiKey = env.TMDB_API_KEY || env.TMDB_READ_ACCESS_TOKEN || '';
@@ -83,6 +137,7 @@ export type SimilarPick = {
 	mediaType: 'movie' | 'tv';
 	title: string;
 	posterUrl: string | null;
+	fallbackUrls?: string[];
 	year: string | null;
 	rating: number | null;
 	overview: string;
@@ -115,8 +170,14 @@ async function searchReference(
 	const { title, year } = parseSearchQuery(query, null);
 	if (!title) return null;
 
+	// Always score both movie + TV — prefer only breaks ties. Prevents "TV Series" format
+	// from latching onto a weak TV hit for a famous movie like a Western.
 	const attempts: Array<'tv' | 'movie'> =
-		prefer === 'movie' ? ['movie', 'tv'] : prefer === 'tv' ? ['tv', 'movie'] : ['tv', 'movie'];
+		prefer === 'movie' ? ['movie', 'tv'] : prefer === 'tv' ? ['tv', 'movie'] : ['movie', 'tv'];
+
+	const want = norm(title);
+	let bestHit: RawHit | null = null;
+	let bestScore = -1;
 
 	for (const kind of attempts) {
 		const params = new URLSearchParams({
@@ -143,43 +204,46 @@ async function searchReference(
 			const results: any[] = data?.results || [];
 			if (!results.length) continue;
 
-			const want = norm(title);
-			let best = results[0];
-			let bestScore = -1;
 			for (const r of results.slice(0, 10)) {
 				const name = String(r.title || r.name || '');
 				let score = 0;
 				const n = norm(name);
-				if (n === want) score += 12;
+				if (n === want) score += 20;
+				else if (n.startsWith(want) || want.startsWith(n)) score += 10;
 				else if (n.includes(want) || want.includes(n)) score += 6;
+				else continue; // ignore unrelated noise
 				const date = r.release_date || r.first_air_date || '';
 				if (year && date.startsWith(year)) score += 8;
 				if (r.poster_path) score += 2;
 				score += Math.min(4, (r.popularity || 0) / 40);
+				// slight preference for the user's selected format — never enough to beat a real title match
+				if (prefer === kind) score += 1.5;
+				if (prefer === 'either' && kind === 'movie') score += 0.25;
+
 				if (score > bestScore) {
 					bestScore = score;
-					best = r;
+					bestHit = {
+						id: r.id,
+						title: name || title,
+						poster_path: r.poster_path || null,
+						date: date || '',
+						vote_average: typeof r.vote_average === 'number' ? r.vote_average : 0,
+						overview: String(r.overview || ''),
+						genre_ids: Array.isArray(r.genre_ids) ? r.genre_ids : [],
+						origin_country: r.origin_country,
+						original_language: r.original_language,
+						mediaType: kind
+					};
 				}
 			}
-
-			return {
-				id: best.id,
-				title: best.title || best.name || title,
-				poster_path: best.poster_path || null,
-				date: best.release_date || best.first_air_date || '',
-				vote_average: typeof best.vote_average === 'number' ? best.vote_average : 0,
-				overview: String(best.overview || ''),
-				genre_ids: Array.isArray(best.genre_ids) ? best.genre_ids : [],
-				origin_country: best.origin_country,
-				original_language: best.original_language,
-				mediaType: kind
-			};
 		} catch (e) {
 			console.warn('tmdb similar: search fail', kind, e);
 		}
 	}
 
-	return null;
+	// Require a real title match — popularity-only junk is worse than falling through to Gemini
+	if (!bestHit || bestScore < 6) return null;
+	return bestHit;
 }
 
 async function fetchSimilarList(
@@ -263,9 +327,13 @@ function looksAnime(hit: RawHit): boolean {
 	return hasAnim && (jp || hit.mediaType === 'tv');
 }
 
-function preferMedia(type: SelectedType): 'tv' | 'movie' | 'either' {
-	if (type === 'movie') return 'movie';
-	if (type === 'series' || type === 'anime') return 'tv';
+function preferMedia(types: MediaFormat[]): 'tv' | 'movie' | 'either' {
+	const allow = catalogFormats(types);
+	if (!allow.length) return 'either';
+	const wantsMovie = allow.includes('movie');
+	const wantsTv = allow.includes('series') || allow.includes('anime');
+	if (wantsMovie && !wantsTv) return 'movie';
+	if (wantsTv && !wantsMovie) return 'tv';
 	return 'either';
 }
 
@@ -319,13 +387,18 @@ function genreNamesFromIds(ids: number[]): string[] {
 function scoreCandidate(
 	hit: RawHit,
 	opts: {
-		type: SelectedType;
+		types: MediaFormat[];
 		userGenres: string[];
 		notes: string;
 		excludeIds: Set<number>;
+		noteVibes: { genreIds: number[]; keywords: string[] };
+		refGenreIds: number[];
 	}
 ): number {
 	if (opts.excludeIds.has(hit.id)) return -999;
+
+	// Hard fail: notes said western/cowboy (etc.) and this pick isn't that
+	if (!hitMatchesVibe(hit, opts.noteVibes)) return -999;
 
 	let score = hit.vote_average * 1.2;
 	if (hit.poster_path) score += 2;
@@ -333,27 +406,48 @@ function scoreCandidate(
 
 	score += genreOverlapScore(hit, opts.userGenres);
 
+	// Inherit genres from the liked reference (Western movie → western neighbors)
+	for (const gid of opts.refGenreIds) {
+		if (hit.genre_ids.includes(gid)) score += 5;
+	}
+
 	const notes = opts.notes.toLowerCase();
 	if (notes) {
 		const tokens = notes.split(/[^a-z0-9+]+/).filter((w) => w.length > 3);
 		const blob = `${hit.title} ${hit.overview}`.toLowerCase();
 		for (const t of tokens) {
-			if (blob.includes(t)) score += 1.5;
+			if (blob.includes(t)) score += 2.5;
+		}
+		for (const k of opts.noteVibes.keywords) {
+			if (blob.includes(k)) score += 4;
 		}
 	}
 
-	if (opts.type === 'anime') {
-		if (looksAnime(hit)) score += 12;
+	const allow = catalogFormats(opts.types);
+	if (!allow.length) return score;
+
+	const wantAnime = allow.includes('anime');
+	const wantSeries = allow.includes('series');
+	const wantMovie = allow.includes('movie');
+	const animeHit = looksAnime(hit);
+
+	if (wantAnime) {
+		if (animeHit) score += 12;
 		else if (hit.genre_ids.includes(GENRE.animation)) score += 4;
-		else score -= 20;
-	} else if (opts.type === 'series') {
-		if (hit.mediaType === 'tv') score += 6;
-		else score -= 15;
-		if (looksAnime(hit)) score -= 8;
-	} else if (opts.type === 'movie') {
-		if (hit.mediaType === 'movie') score += 6;
-		else score -= 15;
+		else if (!wantSeries && !wantMovie) score -= 20;
 	}
+
+	if (wantSeries || wantAnime) {
+		if (hit.mediaType === 'tv') score += 6;
+		else if (!wantMovie) score -= 40; // hard: don't return movies when user asked TV only
+	}
+
+	if (wantMovie) {
+		if (hit.mediaType === 'movie') score += 6;
+		else if (!wantSeries && !wantAnime) score -= 40;
+	}
+
+	if (wantSeries && !wantAnime && animeHit) score -= 8;
 
 	return score;
 }
@@ -365,9 +459,12 @@ export async function findSimilarPicks(opts: {
 	likeTitle?: string;
 	likeTitles?: string[];
 	type?: SelectedType;
+	types?: SelectedTypes;
 	userGenres?: string[];
 	notes?: string;
 	limit?: number;
+	yearFrom?: number | null;
+	yearTo?: number | null;
 }): Promise<SimilarPick[]> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey) return [];
@@ -389,17 +486,31 @@ export async function findSimilarPicks(opts: {
 	}
 	if (!uniqueTitles.length) return [];
 
-	const type = opts.type || 'all';
+	const types = catalogFormats(opts.types ?? opts.type);
 	const userGenres = opts.userGenres || [];
 	const notes = opts.notes || '';
-	const prefer = preferMedia(type);
+	const noteVibes = extractNoteVibes(notes);
+	const prefer = preferMedia(types);
 	const limit = Math.min(Math.max(opts.limit ?? 5, 1), 10);
+	const yearFrom = opts.yearFrom ?? null;
+	const yearTo = opts.yearTo ?? null;
 
+	// Resolve like-titles by best real match (movie OR tv), not by forced format
 	const refs = (
-		await Promise.all(uniqueTitles.map((t) => searchReference(t, prefer, headers, apiKey, useBearer)))
+		await Promise.all(
+			uniqueTitles.map((t) => searchReference(t, 'either', headers, apiKey, useBearer))
+		)
 	).filter((r): r is RawHit => Boolean(r));
 
 	if (!refs.length) return [];
+
+	const refGenreIds = [...new Set(refs.flatMap((r) => r.genre_ids))];
+
+	// Liked a movie but user only wants TV (or vice versa): TMDB similar stays same-media.
+	// Bail so Gemini can find Yellowstone / 1883 / etc. from the vibe + like-title.
+	const refKinds = new Set(refs.map((r) => r.mediaType));
+	if (prefer === 'tv' && !refKinds.has('tv') && refKinds.has('movie')) return [];
+	if (prefer === 'movie' && !refKinds.has('movie') && refKinds.has('tv')) return [];
 
 	const excludeIds = new Set(refs.map((r) => r.id));
 	const refNames = refs.map((r) => r.title);
@@ -428,28 +539,70 @@ export async function findSimilarPicks(opts: {
 
 	if (!pool.length) return [];
 
-	const ranked = pool
+	const inDecade = (h: RawHit) => {
+		if (yearFrom == null && yearTo == null) return true;
+		const y = Number(String(h.date || '').slice(0, 4));
+		if (!Number.isFinite(y) || y < 1000) return false;
+		if (yearFrom != null && y < yearFrom) return false;
+		if (yearTo != null && y > yearTo) return false;
+		return true;
+	};
+
+	let filtered = pool.filter(inDecade);
+	if (noteVibes.genreIds.length || noteVibes.keywords.length) {
+		const vibeHits = filtered.filter((h) => hitMatchesVibe(h, noteVibes));
+		// If notes demand a vibe and TMDB similar has nothing on-theme, don't return trash
+		if (!vibeHits.length) return [];
+		filtered = vibeHits;
+	}
+	if (!filtered.length) filtered = pool;
+
+	const ranked = filtered
 		.map((h) => ({
 			h,
-			score: scoreCandidate(h, { type, userGenres, notes, excludeIds })
+			score: scoreCandidate(h, {
+				types,
+				userGenres,
+				notes,
+				excludeIds,
+				noteVibes,
+				refGenreIds
+			})
 		}))
 		.filter((x) => x.score > -50 && x.h.vote_average >= 5.5)
 		.sort((a, b) => b.score - a.score)
 		.slice(0, limit);
 
-	return ranked.map(({ h }) => ({
-		id: h.id,
-		mediaType: h.mediaType,
-		title: h.title,
-		posterUrl: h.poster_path ? `${POSTER}${h.poster_path}` : null,
-		year: h.date ? h.date.slice(0, 4) : null,
-		rating: h.vote_average || null,
-		overview: h.overview,
-		genres: genreNamesFromIds(h.genre_ids),
-		referenceTitle: refNames.join(', '),
-		referenceTitles: refNames,
-		referenceId: refs[0].id
-	}));
+	// Still nothing credible after format/vibe scoring → Gemini
+	if (!ranked.length) return [];
+
+	return Promise.all(
+		ranked.map(async ({ h }) => {
+			let posterUrl = tmdbImageUrl(h.poster_path, 'w500');
+			let fallbackUrls: string[] = [];
+
+			if (!posterUrl) {
+				const art = await resolveTmdbArtwork(h.id, h.mediaType);
+				posterUrl = art.posterUrl;
+				fallbackUrls = art.fallbackUrls;
+			}
+
+			return {
+				id: h.id,
+				mediaType: h.mediaType,
+				title: h.title,
+				posterUrl,
+				fallbackUrls,
+				year: h.date ? h.date.slice(0, 4) : null,
+				rating: h.vote_average || null,
+				overview: h.overview,
+				genres: genreNamesFromIds(h.genre_ids),
+				referenceTitle: refNames.join(', '),
+				referenceTitles: refNames,
+				referenceId: refs[0].id
+			};
+		})
+	);
 }
 
 /** @deprecated prefer findSimilarPicks — kept for single-pick callers */
@@ -457,6 +610,7 @@ export async function findSimilarPick(opts: {
 	likeTitle?: string;
 	likeTitles?: string[];
 	type?: SelectedType;
+	types?: SelectedTypes;
 	userGenres?: string[];
 	notes?: string;
 }): Promise<SimilarPick | null> {
