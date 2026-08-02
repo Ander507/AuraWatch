@@ -1,3 +1,5 @@
-# allow crawling everything by default
+# https://aura-watching.vercel.app
 User-agent: *
-Disallow:
+Allow: /
+
+Sitemap: https://aura-watching.vercel.app/sitemap.xml

@@ -468,11 +468,6 @@
 </script>
 
 <svelte:head>
-	<title>AuraWatch — picks that fit</title>
-	<meta
-		name="description"
-		content="Pick a format and genres. Get movie, TV, anime, or song recommendations."
-	/>
 	<link rel="preconnect" href="https://fonts.googleapis.com" />
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 	<link
@@ -886,7 +881,9 @@
 			{@render themeSwitcher()}
 		</header>
 
-		<p class="min-headline">One title. That’s it.</p>
+		<p class="min-headline">
+			Can’t find what to watch? Get one movie, show, anime, or song that fits your vibe.
+		</p>
 
 		<div class="min-workspace">
 			<section class="min-form" aria-label="Recommend">
@@ -928,8 +925,11 @@
 				<div class="window-body form-body">
 					<p class="path-line">C:\AuraWatch\</p>
 					<h1 class="brand">AuraWatch</h1>
-					<p class="subhead">one title. that's it.</p>
-					<p class="lede">Choose a format and genres. We'll hand you a single match.</p>
+					<p class="subhead">can’t find what to watch?</p>
+					<p class="lede">
+						Pick a format and genres. We’ll hand you one movie, TV show, anime, or song that
+						fits — so you stop scrolling and start watching.
+					</p>
 
 					{@render formFields()}
 				</div>
@@ -958,10 +958,31 @@
 
 		<footer class="taskbar">
 			<span class="start-btn">AuraWatch</span>
-			<span class="taskbar-tag">one title. that's it.</span>
+			<span class="taskbar-tag">can’t find what to watch?</span>
 		</footer>
 	</main>
 {/if}
+
+<!-- Crawlable copy for search engines (kept out of the hero composition) -->
+<section class="seo-faq" aria-label="About AuraWatch">
+	<h2>Can’t find what to watch tonight?</h2>
+	<p>
+		AuraWatch is a free vibe-based recommender for people stuck in Netflix decision fatigue. Tell
+		it your format, genres, decade, and titles you already like — it returns one strong match with
+		posters, trailers or song previews, and where-to-watch or listen links.
+	</p>
+	<h3>What should I watch if nothing sounds good?</h3>
+	<p>
+		Add a short note about the mood you want (cozy, western, high-energy), pick a few genres, and
+		optionally a show or movie you already love. AuraWatch scores picks against that vibe instead
+		of dumping endless rows.
+	</p>
+	<h3>Movie, TV, anime, and song picks</h3>
+	<p>
+		Use Movies, TV Series, Anime, or Songs mode. Song mode includes listen links for Apple Music,
+		Spotify, and YouTube when available.
+	</p>
+</section>
 
 <style>
 	:global(html),
@@ -1971,6 +1992,35 @@
 		font-weight: 400;
 		color: var(--muted);
 		letter-spacing: -0.01em;
+		max-width: 36rem;
+	}
+
+	/* SEO FAQ: readable to crawlers, visually quiet for humans */
+	.seo-faq {
+		max-width: 40rem;
+		margin: 0 auto;
+		padding: 2.5rem 1.25rem 3.5rem;
+		color: rgba(243, 244, 246, 0.55);
+		font-size: 0.92rem;
+		line-height: 1.55;
+	}
+
+	.seo-faq h2,
+	.seo-faq h3 {
+		color: rgba(243, 244, 246, 0.78);
+		font-size: 1rem;
+		font-weight: 600;
+		letter-spacing: -0.02em;
+		margin: 1.25rem 0 0.4rem;
+	}
+
+	.seo-faq h2 {
+		font-size: 1.15rem;
+		margin-top: 0;
+	}
+
+	.seo-faq p {
+		margin: 0 0 0.75rem;
 	}
 
 	.minimal .min-workspace {
