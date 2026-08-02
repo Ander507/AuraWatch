@@ -19,6 +19,10 @@
 	<meta name="author" content="AuraWatch" />
 	<meta name="robots" content="index, follow, max-image-preview:large" />
 	<meta name="googlebot" content="index, follow" />
+	<meta
+		name="google-site-verification"
+		content="xsUD-hMJpuROysPiXFy9UytXpXlyX66gkDON_xda4AE"
+	/>
 	<link rel="canonical" href={SITE.url} />
 	<link rel="icon" href={favicon} />
 
