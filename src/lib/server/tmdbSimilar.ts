@@ -8,6 +8,7 @@ import {
 	type SelectedTypes
 } from '$lib/server/catalog';
 import { parseSearchQuery, resolveTmdbArtwork, tmdbImageUrl } from '$lib/server/tmdbSearch';
+import { cachedJsonFetch } from '$lib/server/httpCache';
 
 /** TMDB genre ids we care about for filtering */
 const GENRE = {
@@ -128,6 +129,10 @@ function withKey(url: string, apiKey: string, useBearer: boolean) {
 	return `${url}${join}api_key=${apiKey}`;
 }
 
+async function tmdbJson(url: string, headers: Record<string, string>) {
+	return cachedJsonFetch(url, { headers }, { ttlMs: 15 * 60 * 1000 });
+}
+
 function norm(s: string) {
 	return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -198,9 +203,9 @@ async function searchReference(
 		);
 
 		try {
-			const res = await fetch(url, { headers });
-			if (!res.ok) continue;
-			const data = await res.json();
+			const res = await tmdbJson(url, headers);
+			if (!res.ok || !res.data) continue;
+			const data = res.data;
 			const results: any[] = data?.results || [];
 			if (!results.length) continue;
 
@@ -260,9 +265,9 @@ async function fetchSimilarList(
 	);
 
 	try {
-		const res = await fetch(url, { headers });
-		if (!res.ok) return [];
-		const data = await res.json();
+		const res = await tmdbJson(url, headers);
+		if (!res.ok || !res.data) return [];
+		const data = res.data;
 		const results: any[] = data?.results || [];
 		return results.slice(0, 20).map((r) => ({
 			id: r.id,
@@ -297,9 +302,9 @@ async function fetchRecommendationsList(
 	);
 
 	try {
-		const res = await fetch(url, { headers });
-		if (!res.ok) return [];
-		const data = await res.json();
+		const res = await tmdbJson(url, headers);
+		if (!res.ok || !res.data) return [];
+		const data = res.data;
 		const results: any[] = data?.results || [];
 		return results.slice(0, 20).map((r) => ({
 			id: r.id,

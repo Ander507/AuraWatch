@@ -24,24 +24,27 @@ export const GET: RequestHandler = async ({ url }) => {
 		if (isSurronSongSecret(q)) {
 			const track = await fetchOnMyOwnTrack();
 			if (track) {
-				return json({
-					ok: true,
-					query: q,
-					kind: 'music',
-					total: 1,
-					results: [
-						{
-							id: track.id,
-							mediaType: 'song' as const,
-							title: track.title,
-							subtitle: track.artist,
-							posterUrl: track.cover,
-							year: track.year,
-							rating: null,
-							kindLabel: 'SONG' as const
-						}
-					]
-				});
+		return json(
+			{
+				ok: true,
+				query: q,
+				kind: 'music',
+				total: 1,
+				results: [
+					{
+						id: track.id,
+						mediaType: 'song' as const,
+						title: track.title,
+						subtitle: track.artist,
+						posterUrl: track.cover,
+						year: track.year,
+						rating: null,
+						kindLabel: 'SONG' as const
+					}
+				]
+			},
+			{ headers: { 'Cache-Control': 'private, max-age=300' } }
+		);
 			}
 		}
 
@@ -73,9 +76,15 @@ export const GET: RequestHandler = async ({ url }) => {
 				});
 			}
 		}
-		return json({ ok: true, query: q, kind: 'music', total, results: mapped });
+		return json(
+			{ ok: true, query: q, kind: 'music', total, results: mapped },
+			{ headers: { 'Cache-Control': 'private, max-age=120' } }
+		);
 	}
 
 	const { results, total } = await searchTmdbTitles(q, { limit });
-	return json({ ok: true, query: q, kind: 'media', total, results });
+	return json(
+		{ ok: true, query: q, kind: 'media', total, results },
+		{ headers: { 'Cache-Control': 'private, max-age=120' } }
+	);
 };

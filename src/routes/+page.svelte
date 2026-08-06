@@ -8,6 +8,7 @@
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
+	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 
 	const REGION_KEY = 'aurawatch_region';
 	const UI_KEY = 'aurawatch_ui';
@@ -668,10 +669,16 @@
 									onerror={() => onCoverError(i)}
 								/>
 							{:else}
-								<div class="cover-fallback" class:cover-square={song} aria-hidden="true">
-									<span class="cover-fallback-mark">AW</span>
-									<span class="cover-fallback-brand">AuraWatch</span>
-									<span class="cover-fallback-title">{item.title}</span>
+								<div
+									class="cover-fallback"
+									class:cover-square={song}
+									style={coverFallbackStyle(item.artist ? `${item.artist} ${item.title}` : item.title)}
+									aria-hidden="true"
+									title={item.title}
+								>
+									<span class="cover-fallback-initials">
+										{mediaInitials(item.title, item.artist)}
+									</span>
 								</div>
 							{/if}
 						</div>
@@ -1706,51 +1713,25 @@
 
 	.desktop .cover-fallback {
 		display: flex;
-		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 0.35rem;
 		width: 100%;
 		aspect-ratio: 2 / 3;
 		padding: 0.65rem;
 		box-sizing: border-box;
-		background:
-			repeating-linear-gradient(
-				135deg,
-				transparent,
-				transparent 6px,
-				rgba(255, 76, 0, 0.07) 6px,
-				rgba(255, 76, 0, 0.07) 7px
-			),
-			linear-gradient(160deg, #fff8f4 0%, #f5ebe4 55%, #efe4dc 100%);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 		text-align: center;
 	}
-	.desktop .cover-fallback-mark {
+	.desktop .cover-fallback-initials {
+		font-family: 'IBM Plex Sans', system-ui, sans-serif;
 		font-weight: 700;
-		font-size: 1.85rem;
+		font-size: clamp(1.6rem, 4vw, 2.35rem);
 		letter-spacing: -0.04em;
-		color: var(--ink);
 		line-height: 1;
-	}
-	.desktop .cover-fallback-brand {
-		font-size: 0.55rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.12em;
-		color: var(--accent);
-		line-height: 1;
-	}
-	.desktop .cover-fallback-title {
-		font-size: 0.6rem;
-		line-height: 1.25;
-		color: var(--muted);
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
-		overflow: hidden;
-		word-break: break-word;
-		margin-top: 0.15rem;
+		color: rgba(255, 255, 255, 0.92);
+		text-shadow: 0 1px 10px rgba(0, 0, 0, 0.35);
+		user-select: none;
 	}
 
 	.desktop .rec-label {
@@ -2489,48 +2470,25 @@
 
 	.minimal .cover-fallback {
 		display: flex;
-		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 0.35rem;
 		width: 100%;
 		aspect-ratio: 2 / 3;
 		padding: 0.65rem;
 		box-sizing: border-box;
-		background: linear-gradient(
-			160deg,
-			#1a1a22 0%,
-			#14141a 45%,
-			rgba(139, 124, 247, 0.18) 100%
-		);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 		text-align: center;
 	}
-	.minimal .cover-fallback-mark {
+	.minimal .cover-fallback-initials {
+		font-family: 'IBM Plex Sans', system-ui, sans-serif;
 		font-weight: 700;
-		font-size: 1.75rem;
+		font-size: clamp(1.5rem, 3.5vw, 2.1rem);
 		letter-spacing: -0.04em;
-		color: var(--ink);
 		line-height: 1;
-	}
-	.minimal .cover-fallback-brand {
-		font-size: 0.58rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.12em;
-		color: var(--accent);
-		line-height: 1;
-	}
-	.minimal .cover-fallback-title {
-		font-size: 0.65rem;
-		line-height: 1.25;
-		color: var(--muted);
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
-		overflow: hidden;
-		word-break: break-word;
-		margin-top: 0.15rem;
+		color: rgba(255, 255, 255, 0.92);
+		text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
+		user-select: none;
 	}
 
 	.minimal .rec-label {

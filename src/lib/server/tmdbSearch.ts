@@ -2,6 +2,7 @@
 // Poster resolution: search → prefer art → /images → backdrop → yearless → multi
 
 import { env } from '$env/dynamic/private';
+import { cachedJsonFetch } from '$lib/server/httpCache';
 
 const POSTER = 'https://image.tmdb.org/t/p/w500';
 const BACKDROP = 'https://image.tmdb.org/t/p/w780';
@@ -19,6 +20,10 @@ function withKey(url: string, apiKey: string, useBearer: boolean) {
 	if (useBearer || !apiKey) return url;
 	const join = url.includes('?') ? '&' : '?';
 	return `${url}${join}api_key=${apiKey}`;
+}
+
+async function tmdbJson(url: string, headers: Record<string, string>) {
+	return cachedJsonFetch(url, { headers }, { ttlMs: 15 * 60 * 1000 });
 }
 
 export function tmdbImageUrl(
@@ -103,9 +108,9 @@ export async function resolveTmdbArtwork(
 			apiKey,
 			useBearer
 		);
-		const imgRes = await fetch(imgUrl, { headers });
-		if (imgRes.ok) {
-			const data = await imgRes.json();
+		const imgRes = await tmdbJson(imgUrl, headers);
+		if (imgRes.ok && imgRes.data) {
+			const data = imgRes.data;
 			for (const p of data?.posters || []) {
 				const u = tmdbImageUrl(p.file_path, 'w500');
 				if (u) posters.push(u);
@@ -114,6 +119,8 @@ export async function resolveTmdbArtwork(
 				const u = tmdbImageUrl(b.file_path, 'w780');
 				if (u) backdrops.push(u);
 			}
+		} else if (imgRes.status === 429) {
+			console.warn('tmdb images rate-limited', mediaType, id);
 		}
 	} catch (e) {
 		console.warn('tmdb images fail', mediaType, id, e);
@@ -126,9 +133,9 @@ export async function resolveTmdbArtwork(
 				apiKey,
 				useBearer
 			);
-			const detailRes = await fetch(detailUrl, { headers });
-			if (detailRes.ok) {
-				const d = await detailRes.json();
+			const detailRes = await tmdbJson(detailUrl, headers);
+			if (detailRes.ok && detailRes.data) {
+				const d = detailRes.data;
 				const p = tmdbImageUrl(d.poster_path, 'w500');
 				const b = tmdbImageUrl(d.backdrop_path, 'w780');
 				if (p) posters.push(p);
@@ -147,9 +154,9 @@ export async function resolveTmdbArtwork(
 				apiKey,
 				useBearer
 			);
-			const extRes = await fetch(extUrl, { headers });
-			if (extRes.ok) {
-				const ext = await extRes.json();
+			const extRes = await tmdbJson(extUrl, headers);
+			if (extRes.ok && extRes.data) {
+				const ext = extRes.data;
 				const imdbId = ext?.imdb_id;
 				if (imdbId) {
 					const findUrl = withKey(
@@ -157,9 +164,9 @@ export async function resolveTmdbArtwork(
 						apiKey,
 						useBearer
 					);
-					const findRes = await fetch(findUrl, { headers });
-					if (findRes.ok) {
-						const found = await findRes.json();
+					const findRes = await tmdbJson(findUrl, headers);
+					if (findRes.ok && findRes.data) {
+						const found = findRes.data;
 						const pool = [
 							...(found.movie_results || []),
 							...(found.tv_results || [])
@@ -206,9 +213,9 @@ async function searchKindResults(opts: {
 	}
 
 	const url = withKey(`https://api.themoviedb.org/3/search/${kind}?${params}`, apiKey, useBearer);
-	const res = await fetch(url, { headers });
-	if (!res.ok) return [];
-	const data = await res.json();
+	const res = await tmdbJson(url, headers);
+	if (!res.ok || !res.data) return [];
+	const data = res.data;
 	const results: any[] = data?.results || [];
 	if (!results.length) return [];
 
@@ -369,9 +376,9 @@ export async function searchTmdbPoster(opts: {
 			apiKey,
 			useBearer
 		);
-		const res = await fetch(url, { headers });
-		if (res.ok) {
-			const data = await res.json();
+		const res = await tmdbJson(url, headers);
+		if (res.ok && res.data) {
+			const data = res.data;
 			const want = normTitle(title);
 			const raw: any[] = data?.results || [];
 			const scored: ScoredResult[] = [];
@@ -445,9 +452,9 @@ export async function searchTmdbTitles(
 	);
 
 	try {
-		const res = await fetch(url, { headers });
-		if (!res.ok) return { results: [], total: 0 };
-		const data = await res.json();
+		const res = await tmdbJson(url, headers);
+		if (!res.ok || !res.data) return { results: [], total: 0 };
+		const data = res.data;
 		const raw: any[] = data?.results || [];
 		const total = typeof data?.total_results === 'number' ? data.total_results : raw.length;
 

@@ -1,6 +1,8 @@
 // itunes search — free, no api key, bless apple
 // used for song covers + "open in apple/spotify/yt" links
 
+import { cachedJsonFetch } from '$lib/server/httpCache';
+
 const ITUNES = 'https://itunes.apple.com/search';
 const ITUNES_LOOKUP = 'https://itunes.apple.com/lookup';
 
@@ -53,9 +55,12 @@ function titleCore(s: string) {
 
 async function itunesFetch(params: URLSearchParams): Promise<any[]> {
 	try {
-		const res = await fetch(`${ITUNES}?${params}`);
-		if (!res.ok) return [];
-		const data = await res.json();
+		const { ok, data } = await cachedJsonFetch(
+			`${ITUNES}?${params}`,
+			undefined,
+			{ ttlMs: 10 * 60 * 1000 }
+		);
+		if (!ok || !data) return [];
 		return data?.results || [];
 	} catch (e) {
 		console.warn('itunes died', e);
@@ -65,9 +70,12 @@ async function itunesFetch(params: URLSearchParams): Promise<any[]> {
 
 async function itunesLookup(params: URLSearchParams): Promise<any[]> {
 	try {
-		const res = await fetch(`${ITUNES_LOOKUP}?${params}`);
-		if (!res.ok) return [];
-		const data = await res.json();
+		const { ok, data } = await cachedJsonFetch(
+			`${ITUNES_LOOKUP}?${params}`,
+			undefined,
+			{ ttlMs: 15 * 60 * 1000 }
+		);
+		if (!ok || !data) return [];
 		return data?.results || [];
 	} catch (e) {
 		console.warn('itunes lookup died', e);

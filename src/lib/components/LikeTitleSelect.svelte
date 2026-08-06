@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { tick } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 
 	export type LikeHit = {
 		id: number;
@@ -38,8 +40,12 @@
 	let rootEl = $state<HTMLDivElement | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let listEl = $state<HTMLUListElement | null>(null);
+	let brokenPosters = $state(new SvelteSet<string>());
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let abort: AbortController | null = null;
+
+	const SEARCH_CACHE_PREFIX = 'aurawatch_search_v1:';
+	const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 
 	let atMax = $derived(values.length >= max);
 	let selectedSet = $derived(new Set(values.map((v) => v.toLowerCase())));
@@ -60,12 +66,67 @@
 		return hit.subtitle ? `${hit.subtitle} — ${hit.title}` : hit.title;
 	}
 
+	function posterKey(hit: LikeHit) {
+		return `${hit.mediaType}:${hit.id}`;
+	}
+
+	function markPosterBroken(hit: LikeHit) {
+		brokenPosters.add(posterKey(hit));
+	}
+
+	function showPoster(hit: LikeHit) {
+		return Boolean(hit.posterUrl) && !brokenPosters.has(posterKey(hit));
+	}
+
+	function readSearchCache(key: string): { results: LikeHit[]; total: number } | null {
+		try {
+			const raw = localStorage.getItem(SEARCH_CACHE_PREFIX + key);
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			if (!parsed || typeof parsed.expires !== 'number' || parsed.expires < Date.now()) {
+				localStorage.removeItem(SEARCH_CACHE_PREFIX + key);
+				return null;
+			}
+			return {
+				results: Array.isArray(parsed.results) ? parsed.results : [],
+				total: typeof parsed.total === 'number' ? parsed.total : 0
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	function writeSearchCache(key: string, payload: { results: LikeHit[]; total: number }) {
+		try {
+			localStorage.setItem(
+				SEARCH_CACHE_PREFIX + key,
+				JSON.stringify({ ...payload, expires: Date.now() + SEARCH_CACHE_TTL_MS })
+			);
+		} catch {
+			/* quota / private mode */
+		}
+	}
+
 	async function runSearch(q: string) {
 		abort?.abort();
 		const trimmed = q.trim();
 		if (trimmed.length < 1 || atMax) {
 			results = [];
 			total = 0;
+			loading = false;
+			return;
+		}
+
+		const cacheKey = `${kind}|${trimmed.toLowerCase()}`;
+		const cached = readSearchCache(cacheKey);
+		if (cached) {
+			results = cached.results.filter((h) => {
+				const label = chipTxt(h);
+				return !selectedSet.has(normTitle(label)) && !selectedSet.has(normTitle(h.title));
+			});
+			total = cached.total;
+			highlight = 0;
+			open = true;
 			loading = false;
 			return;
 		}
@@ -82,6 +143,10 @@
 			const data = await res.json().catch(() => ({}));
 			if (ctrl.signal.aborted) return;
 			const raw: LikeHit[] = Array.isArray(data?.results) ? data.results : [];
+			writeSearchCache(cacheKey, {
+				results: raw,
+				total: typeof data?.total === 'number' ? data.total : raw.length
+			});
 			// skip stuff already picked (check both chip label + bare title, whatever)
 			results = raw.filter((h) => {
 				const label = chipTxt(h);
@@ -295,10 +360,26 @@
 								onclick={() => selectHit(hit)}
 								onmouseenter={() => (highlight = i)}
 							>
-								{#if hit.posterUrl}
-									<img class="poster" src={hit.posterUrl} alt="" loading="lazy" />
+								{#if showPoster(hit)}
+									<img
+										class="poster"
+										src={hit.posterUrl}
+										alt=""
+										loading="lazy"
+										onerror={() => markPosterBroken(hit)}
+									/>
 								{:else}
-									<span class="poster poster-fallback" aria-hidden="true"></span>
+									<span
+										class="poster poster-fallback"
+										style={coverFallbackStyle(
+											hit.subtitle ? `${hit.subtitle} ${hit.title}` : hit.title
+										)}
+										aria-hidden="true"
+									>
+										<span class="poster-initials">
+											{mediaInitials(hit.title, hit.subtitle)}
+										</span>
+									</span>
 								{/if}
 								<span class="meta">
 									<span class="title">{hit.title}</span>
@@ -489,9 +570,22 @@
 		object-fit: cover;
 		border-radius: 4px;
 		background: #2a2a35;
+		flex-shrink: 0;
 	}
 	.poster-fallback {
-		display: block;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+	}
+	.poster-initials {
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: -0.03em;
+		color: rgba(255, 255, 255, 0.92);
+		line-height: 1;
+		user-select: none;
 	}
 
 	.meta {
