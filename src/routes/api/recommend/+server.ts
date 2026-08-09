@@ -35,6 +35,58 @@ import {
 	songSecretRecommendation,
 	surronsterVidRecommendations
 } from '$lib/server/easterEggs';
+import {
+	parsePlatforms,
+	platformsPromptBlock,
+	platformsStrictRule
+} from '$lib/gamePlatforms';
+import { antiVibePromptBlock, antiVibeStrictRule, parseAntiVibe } from '$lib/server/antiVibe';
+import {
+	parsePriceRange,
+	priceRangeBadge,
+	priceRangePromptBlock,
+	priceRangeStrictRule,
+	type PriceRangeId
+} from '$lib/server/priceRange';
+import {
+	parseSeriesLength,
+	seasonCountAllowed,
+	seasonsLabel,
+	seriesLengthPromptBlock,
+	seriesLengthStrictRule,
+	type SeriesLengthId
+} from '$lib/server/seriesLength';
+import { fetchTvSeasonCount } from '$lib/server/tmdbTvDetails';
+import {
+	maturityPromptBlock,
+	maturityStrictRule,
+	parseMaturity,
+	type MaturityLevel
+} from '$lib/server/maturity';
+import { passesMaturityGate } from '$lib/server/tmdbCertification';
+import {
+	buildStoreLinksForPlatforms,
+	gamePassesMaturity,
+	lookupIgdbGame,
+	primaryStoreLink
+} from '$lib/server/igdbSearch';
+import { howManyIgdbCreds } from '$lib/server/igdbAuth';
+
+/** Season count for TV picks — optional hard gate when Series Length is set. */
+async function resolveTvSeasons(
+	tmdbId: number,
+	mediaType: 'movie' | 'tv',
+	seriesLength: SeriesLengthId | null
+): Promise<{ ok: boolean; number_of_seasons: number | null; seasons_label: string | null }> {
+	if (mediaType !== 'tv' || !tmdbId) {
+		return { ok: true, number_of_seasons: null, seasons_label: null };
+	}
+	const count = await fetchTvSeasonCount(tmdbId);
+	if (!seasonCountAllowed(count, seriesLength)) {
+		return { ok: false, number_of_seasons: count, seasons_label: seasonsLabel(count) };
+	}
+	return { ok: true, number_of_seasons: count, seasons_label: seasonsLabel(count) };
+}
 
 const REC_LIMIT = 5;
 
@@ -44,10 +96,12 @@ function parseOneFormat(raw: any): MediaFormat | null {
 	if (t === 'series' || t === 'tv' || t === 'show' || t === 'shows') return 'series';
 	if (t === 'anime') return 'anime';
 	if (t === 'song' || t === 'songs' || t === 'music' || t === 'track') return 'songs';
+	if (t === 'game' || t === 'games' || t === 'gaming' || t === 'videogame' || t === 'video-game')
+		return 'games';
 	return null;
 }
 
-/** Prefer body.types[]; fall back to legacy body.type. Empty = all media. Songs exclusive. */
+/** Prefer body.types[]; fall back to legacy body.type. Empty = all media. Songs/games exclusive. */
 function normalizeTypes(body: any): MediaFormat[] {
 	const out: MediaFormat[] = [];
 	const seen = new Set<MediaFormat>();
@@ -65,8 +119,9 @@ function normalizeTypes(body: any): MediaFormat[] {
 		push(body.type);
 	}
 
+	if (out.includes('games')) return ['games'];
 	if (out.includes('songs')) return ['songs'];
-	return out.filter((t) => t !== 'songs');
+	return out.filter((t) => t !== 'songs' && t !== 'games');
 }
 
 function formatLabel(types: MediaFormat[]): string {
@@ -76,6 +131,7 @@ function formatLabel(types: MediaFormat[]): string {
 			if (t === 'movie') return 'movie';
 			if (t === 'series') return 'TV series';
 			if (t === 'anime') return 'anime';
+			if (t === 'games') return 'games';
 			return 'songs';
 		})
 		.join(' OR ');
@@ -154,6 +210,8 @@ function buildMusicConciergePrompt(opts: {
 	likeTitles?: string[];
 	decade?: DecadeRange | null;
 	notesWeight?: number;
+	maturity?: MaturityLevel | null;
+	antiVibe?: string;
 }) {
 	const genres = opts.genres.join(', ') || 'None';
 	const prompt = opts.prompt || '';
@@ -163,6 +221,12 @@ function buildMusicConciergePrompt(opts: {
 	const hasNotes = Boolean(prompt.trim());
 	const weight = parseNotesWeight(opts.notesWeight);
 	const band = notesWeightBand(weight);
+	const maturity = opts.maturity ?? null;
+	const maturityBlock = maturityPromptBlock(maturity, 'music');
+	const maturityRule = maturityStrictRule(maturity, 'music');
+	const anti = parseAntiVibe(opts.antiVibe);
+	const antiBlock = antiVibePromptBlock(anti);
+	const antiRule = antiVibeStrictRule(anti);
 
 	let likeBlock = '';
 	if (likes.length) {
@@ -204,7 +268,9 @@ function buildMusicConciergePrompt(opts: {
 You are an expert music recommender (songs, not albums-as-products — pick specific tracks).
 USER INPUT:
 - Genres: ${genres}
-- Vibe/Prompt (Notes): '${prompt || '(none)'}'${eraBlock}${likeBlock}
+- Vibe/Prompt (Notes): '${prompt || '(none)'}'${eraBlock}
+${maturityBlock}
+${antiBlock}${likeBlock}
 ${weightingBlock}
 
 STRICT RULES:
@@ -216,6 +282,8 @@ STRICT RULES:
 ${hasNotes ? `6. Respect the PRIORITY WEIGHTING block above for Notes vs Similar-to.` : ''}
 ${opts.decade ? `${hasNotes ? '7' : '6'}. ERA: releaseYear MUST be between ${opts.decade.yearFrom} and ${opts.decade.yearTo} inclusive.` : ''}
 ${likes.length ? `${opts.decade ? (hasNotes ? '8' : '7') : hasNotes ? '7' : '6'}. SIMILAR-TO: neighbors of ${likeLabel}, not those tracks themselves.` : ''}
+${maturityRule ? `${maturityRule}` : ''}
+${antiRule ? `${antiRule}` : ''}
 
 RESPONSE JSON FORMAT:
 {
@@ -244,6 +312,168 @@ type GeminiSongRec = {
 	matchReason: string;
 	searchQuery: string;
 };
+
+type GeminiGameRec = {
+	title: string;
+	releaseYear: string;
+	actualGenres: string[];
+	matchReason: string;
+	searchQuery: string;
+};
+
+function buildGamesConciergePrompt(opts: {
+	genres: string[];
+	prompt: string;
+	likeTitles?: string[];
+	decade?: DecadeRange | null;
+	notesWeight?: number;
+	maturity?: MaturityLevel | null;
+	priceRange?: PriceRangeId | null;
+	antiVibe?: string;
+	platforms?: string[];
+}) {
+	const genres = opts.genres.join(', ') || 'None';
+	const prompt = opts.prompt || '';
+	const likes = (opts.likeTitles || []).map((t) => t.trim()).filter(Boolean);
+	const likeLabel = likes.join(', ');
+	const era = decadePromptLabel(opts.decade || null);
+	const hasNotes = Boolean(prompt.trim());
+	const weight = parseNotesWeight(opts.notesWeight);
+	const band = notesWeightBand(weight);
+	const maturity = opts.maturity ?? null;
+	const maturityBlock = maturityPromptBlock(maturity, 'games');
+	const maturityRule = maturityStrictRule(maturity, 'games');
+	const priceRange = opts.priceRange ?? null;
+	const priceBlock = priceRangePromptBlock(priceRange);
+	const priceRule = priceRangeStrictRule(priceRange);
+	const anti = parseAntiVibe(opts.antiVibe);
+	const antiBlock = antiVibePromptBlock(anti);
+	const antiRule = antiVibeStrictRule(anti);
+	const platforms = parsePlatforms(opts.platforms);
+	const platformBlock = platformsPromptBlock(platforms);
+	const platformRule = platformsStrictRule(platforms);
+
+	let likeBlock = '';
+	if (likes.length) {
+		if (hasNotes && band === 'notes') {
+			likeBlock = `
+- Similar-to games (SECONDARY): ${likes.map((t) => `'${t}'`).join(', ')}
+  Soft taste hints only. Notes/Vibe outrank structural similarity. Never return those exact games.`;
+		} else if (hasNotes && band === 'balanced') {
+			likeBlock = `
+- Similar-to games (BALANCED): ${likes.map((t) => `'${t}'`).join(', ')}
+  Fit both Notes vibe and these references. Never return those exact games.`;
+		} else if (hasNotes && band === 'similar') {
+			likeBlock = `
+- Similar-to games (PRIMARY): ${likes.map((t) => `'${t}'`).join(', ')}
+  Prefer neighbors of these references; Notes are a soft steer. Never return those exact games.`;
+		} else {
+			likeBlock = `
+- Similar-to games (HARD): ${likes.map((t) => `'${t}'`).join(', ')}
+  Recommend DIFFERENT games in the same vibe/systems/audience. Never return those exact games.`;
+		}
+	}
+
+	const eraBlock = opts.decade
+		? `
+- Decade/Era (HARD): ${era}
+  Every game's first_release year MUST fall in ${opts.decade.yearFrom}–${opts.decade.yearTo}.`
+		: `
+- Decade/Era: Any`;
+
+	const weightingBlock = buildWeightingBlock({
+		weight,
+		hasNotes,
+		hasLikes: likes.length > 0,
+		kind: 'media'
+	});
+
+	return `
+You are an expert video game recommender (PC, console, and multiplayer titles).
+USER INPUT:
+- Genres: ${genres}
+- Vibe/Prompt (Notes): '${prompt || '(none)'}'${eraBlock}
+${maturityBlock}
+${priceBlock}
+${platformBlock}
+${antiBlock}${likeBlock}
+${weightingBlock}
+
+VIBE TESTS (apply silently):
+- "highly competitive tactical shooter" → titles like Counter-Strike 2, Valorant, Rainbow Six Siege — NOT story campaigns.
+- "deep crafting, automation, user-generated content" → Minecraft (modded), Factorio, Satisfactory, Roblox — NOT linear shooters.
+- Match gameplay loop and social mode, not just a shared genre tag.
+
+STRICT RULES:
+1. Return real, searchable game titles (main editions — not random DLC names unless the vibe demands it).
+2. Prefer titles IGDB / Steam can resolve by exact name.
+3. Diversity: don't recommend 5 near-identical clones unless vibes demand it.
+4. NO THIRD PERSON in matchReason — speak to the user.
+5. searchQuery MUST be "Exact Title (YYYY)" when year is known.
+${hasNotes ? `6. Respect the PRIORITY WEIGHTING block above for Notes vs Similar-to.` : ''}
+${opts.decade ? `${hasNotes ? '7' : '6'}. ERA: releaseYear MUST be between ${opts.decade.yearFrom} and ${opts.decade.yearTo} inclusive.` : ''}
+${likes.length ? `${opts.decade ? (hasNotes ? '8' : '7') : hasNotes ? '7' : '6'}. SIMILAR-TO: neighbors of ${likeLabel}, not those games themselves.` : ''}
+${maturityRule ? `${maturityRule}` : ''}
+${priceRule ? `${priceRule}` : ''}
+${platformRule ? `${platformRule}` : ''}
+${antiRule ? `${antiRule}` : ''}
+
+RESPONSE JSON FORMAT:
+{
+  "recommendations": [
+    {
+      "title": "Exact Game Title",
+      "releaseYear": "YYYY",
+      "actualGenres": ["Genre"],
+      "matchReason": "Direct, 2-sentence pitch.",
+      "searchQuery": "Exact Title (YYYY)"
+    }
+  ]
+}
+
+Return exactly ${REC_LIMIT} distinct games, best match first.
+Output ONLY valid JSON. No markdown fences, no trailing commas, no comments.
+`.trim();
+}
+
+function parseGeminiGameRecs(raw: string): GeminiGameRec[] {
+	const parsed = safeParseJson(raw);
+	let list: any[] = [];
+	if (Array.isArray(parsed?.recommendations)) list = parsed.recommendations;
+	else if (Array.isArray(parsed)) list = parsed;
+	else if (parsed?.title) list = [parsed];
+
+	const out: GeminiGameRec[] = [];
+	const seen = new Set<string>();
+
+	for (const item of list) {
+		const title = String(item?.title || '').trim();
+		if (!title) continue;
+		const key = title.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+
+		let genres: string[] = [];
+		if (Array.isArray(item?.actualGenres)) {
+			genres = item.actualGenres.map((g: any) => String(g)).filter(Boolean);
+		} else if (Array.isArray(item?.genres)) {
+			genres = item.genres.map((g: any) => String(g)).filter(Boolean);
+		}
+
+		const releaseYear = String(item?.releaseYear || item?.year || '').trim().slice(0, 4);
+		out.push({
+			title,
+			releaseYear,
+			actualGenres: genres,
+			matchReason: String(item?.matchReason || item?.pitch || '').trim(),
+			searchQuery:
+				String(item?.searchQuery || '').trim() ||
+				(releaseYear ? `${title} (${releaseYear})` : title)
+		});
+		if (out.length >= REC_LIMIT) break;
+	}
+	return out;
+}
 
 function parseGeminiSongRecs(raw: string): GeminiSongRec[] {
 	const parsed = safeParseJson(raw);
@@ -291,6 +521,9 @@ function buildConciergePrompt(opts: {
 	likeTitles?: string[];
 	decade?: DecadeRange | null;
 	notesWeight?: number;
+	maturity?: MaturityLevel | null;
+	seriesLength?: SeriesLengthId | null;
+	antiVibe?: string;
 }) {
 	const type = formatLabel(opts.types);
 	const allowed = allowedMediaTypes(opts.types);
@@ -302,6 +535,18 @@ function buildConciergePrompt(opts: {
 	const eraLine = opts.decade
 		? `- Decade/Era (HARD): ${era} — every title's releaseYear MUST be ${opts.decade.yearFrom}–${opts.decade.yearTo}`
 		: `- Decade/Era: Any`;
+	const maturity = opts.maturity ?? null;
+	const maturityLine = maturityPromptBlock(maturity, 'media');
+	const maturityRule = maturityStrictRule(maturity, 'media');
+	const wantsSeriesLength =
+		Boolean(opts.seriesLength) &&
+		(opts.types.includes('series') || opts.types.includes('anime'));
+	const seriesLength = wantsSeriesLength ? opts.seriesLength ?? null : null;
+	const seriesLengthLine = seriesLengthPromptBlock(seriesLength);
+	const seriesLengthRule = seriesLengthStrictRule(seriesLength);
+	const anti = parseAntiVibe(opts.antiVibe);
+	const antiBlock = antiVibePromptBlock(anti);
+	const antiRule = antiVibeStrictRule(anti);
 
 	const hasNotes = Boolean(prompt.trim());
 	const weight = parseNotesWeight(opts.notesWeight);
@@ -346,25 +591,33 @@ USER INPUT:
 - Format: ${type} 
 - Required Genres: ${genres}
 ${eraLine}
+${maturityLine}
+${seriesLengthLine}
+${antiBlock}
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${likeBlock}
 ${weightingBlock}
 
 CHAIN OF THOUGHT (do this silently before answering — do not output the reasoning):
-1. List hard constraints from Format + Required Genres + Decade/Era${hasNotes ? ' + Notes/Vibe' : ''}${likes.length ? ' + Similar-to titles' : ''}.
-2. Reject any title that fails a hard constraint (wrong format, wrong era/year, wrong length, no thematic fit${hasNotes ? ', fails Notes/vibe when Notes are weighted high' : ''}${likes.length ? `, or is one of the reference titles` : ''}).
-3. OVERRIDE POPULARITY BIAS before picking — popular defaults are guilty until proven perfect.
-${notesPrimary ? `4. Score every candidate first by Notes/vibe fit. Similar-to may break ties only among equally on-vibe titles.` : notesBalanced ? `4. Score candidates on both Notes fit and Similar-to neighbor fit; keep both in play.` : likes.length ? `4. If Similar-to is set, prioritize thematic neighbors of those titles (same vibe/energy), not sequels of them. Use Notes as a soft bias when present.` : ''}
+1. List hard constraints from Format + Required Genres + Decade/Era + Content rating${seriesLength ? ' + Series length' : ''}${anti ? ' + Anti-vibe exclusions' : ''}${hasNotes ? ' + Notes/Vibe' : ''}${likes.length ? ' + Similar-to titles' : ''}.
+2. If Notes mention a song, artist, soundtrack, needle-drop, or "movies/shows with [song]", treat that as a HARD soundtrack constraint — recommend titles where that music is actually featured (or that artist's music is prominently used), not just the same vibe as the song.
+3. Reject any title that fails a hard constraint (wrong format, wrong era/year, wrong content rating, wrong series length, hits anti-vibe, wrong soundtrack fit, wrong length, no thematic fit${hasNotes ? ', fails Notes/vibe when Notes are weighted high' : ''}${likes.length ? `, or is one of the reference titles` : ''}).
+4. OVERRIDE POPULARITY BIAS before picking — popular defaults are guilty until proven perfect.
+${notesPrimary ? `5. Score every candidate first by Notes/vibe fit (including soundtrack fit). Similar-to may break ties only among equally on-vibe titles.` : notesBalanced ? `5. Score candidates on both Notes fit and Similar-to neighbor fit; keep both in play.` : likes.length ? `5. If Similar-to is set, prioritize thematic neighbors of those titles (same vibe/energy), not sequels of them. Use Notes as a soft bias when present.` : ''}
 
 STRICT RULES:
 1. OVERRIDE POPULARITY BIAS: Do not default to Breaking Bad, Game of Thrones, or Naruto unless they perfectly match the Vibe/Prompt. 
 2. MATCHING: If the user asks for 'Police, 911' and 'Romance', you MUST return a show centered on first responders with romantic subplots (e.g., 'The Rookie', '9-1-1', 'Castle'). 
-3. Respect the PRIORITY WEIGHTING block above. When Notes weight is high, words like western, cowboy, horror, heist in Notes are non-negotiable — never recommend a title that ignores that vibe (e.g. do NOT suggest Dynasty for a cowboy/western request). Prefer on-theme titles even if less famous (e.g. Yellowstone, 1883, Justified, Godless for western TV).
-4. NO THIRD PERSON: Write the 'matchReason' directly to the user (e.g., 'Because you wanted a police show with romance...'). Never say 'The user is looking for...'.${hasNotes ? ' Lead with how the pick matches Notes when Notes weight is high.' : ''}
-5. actualGenres must be the title's REAL genres — never parrot Required Genres if the show does not have them.
-6. searchQuery MUST be "Exact Title (YYYY)" so poster search is unambiguous (e.g. "Charlotte (2015)" not just "Charlotte").
-7. Respect Format strictly: every recommendation's mediaType MUST be one of the allowed formats (${allowed}). When Format lists multiple options (e.g. movie OR TV series), you may mix them across the list but each item must still match one allowed format. anime + "1 season"/episodes → Anime Series (not anime movie). series → TV Series. movie → Movie.
-${opts.decade ? `8. ERA (HARD): releaseYear MUST be between ${opts.decade.yearFrom} and ${opts.decade.yearTo} inclusive. Prefer titles that premiered/released in that decade — do not stretch eras.` : ''}
-${likes.length ? `${opts.decade ? '9' : '8'}. SIMILAR-TO: Recommend titles LIKE ${likeLabel}, not those titles themselves. Apply the PRIORITY WEIGHTING block when Notes are also present.` : ''}
+3. SOUNDTRACKS: If Notes ask for movies/TV/anime featuring a specific song or artist (e.g. "movies with Nightcall", "shows with Radiohead", "films that use Where Is My Mind"), use your film/TV soundtrack knowledge to recommend titles where that music is prominently featured. Name the song/needle-drop in matchReason. Prefer accurate soundtrack placements over vibe-only neighbors.
+4. Respect the PRIORITY WEIGHTING block above. When Notes weight is high, words like western, cowboy, horror, heist in Notes are non-negotiable — never recommend a title that ignores that vibe (e.g. do NOT suggest Dynasty for a cowboy/western request). Prefer on-theme titles even if less famous (e.g. Yellowstone, 1883, Justified, Godless for western TV).
+5. NO THIRD PERSON: Write the 'matchReason' directly to the user (e.g., 'Because you wanted a police show with romance...'). Never say 'The user is looking for...'.${hasNotes ? ' Lead with how the pick matches Notes when Notes weight is high.' : ''}
+6. actualGenres must be the title's REAL genres — never parrot Required Genres if the show does not have them.
+7. searchQuery MUST be ONLY "Exact Title (YYYY)" — nothing else. No song names, artists, "featuring", or soundtrack notes (e.g. "Drive (2011)" not "Drive (2011) featuring Nightcall"). Put soundtrack details in matchReason only.
+8. Respect Format strictly: every recommendation's mediaType MUST be one of the allowed formats (${allowed}). When Format lists multiple options (e.g. movie OR TV series), you may mix them across the list but each item must still match one allowed format. anime + "1 season"/episodes → Anime Series (not anime movie). series → TV Series. movie → Movie.
+${opts.decade ? `9. ERA (HARD): releaseYear MUST be between ${opts.decade.yearFrom} and ${opts.decade.yearTo} inclusive. Prefer titles that premiered/released in that decade — do not stretch eras.` : ''}
+${likes.length ? `${opts.decade ? '10' : '9'}. SIMILAR-TO: Recommend titles LIKE ${likeLabel}, not those titles themselves. Apply the PRIORITY WEIGHTING block when Notes are also present.` : ''}
+${maturityRule ? `${maturityRule}` : ''}
+${seriesLengthRule ? `${seriesLengthRule}` : ''}
+${antiRule ? `${antiRule}` : ''}
 
 RESPONSE JSON FORMAT:
 {
@@ -482,13 +735,33 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const selectedTypes = normalizeTypes(body);
 	const isSongs = selectedTypes.length === 1 && selectedTypes[0] === 'songs';
+	const isGames = selectedTypes.length === 1 && selectedTypes[0] === 'games';
 	const selectedType = legacyType(selectedTypes);
 	const decade = parseDecade(body.decade ?? body.era ?? body.yearDecade);
+	const maturity = parseMaturity(
+		body.maturity ?? body.contentRating ?? body.content_rating ?? body.ratingLevel
+	);
+	const priceRange = isGames
+		? parsePriceRange(body.priceRange ?? body.price_range ?? body.priceTier)
+		: null;
+	const targetPlatforms = isGames
+		? parsePlatforms(body.platforms ?? body.targetPlatforms ?? body.platform)
+		: [];
+	const wantsSeries =
+		selectedTypes.includes('series') || selectedTypes.includes('anime');
+	const seriesLength = wantsSeries
+		? parseSeriesLength(
+				body.seriesLength ?? body.seasonCount ?? body.seasons ?? body.series_length
+			)
+		: null;
 	const notesWeight = parseNotesWeight(body.notesWeight ?? body.notes_weight ?? body.weight);
 	const selectedGenres: string[] = Array.isArray(body.genres)
 		? body.genres.map((g: any) => String(g).trim()).filter(Boolean)
 		: [];
 	const vibePrompt = (body.prompt || body.vibe || body.text || '').toString().trim();
+	const antiVibe = parseAntiVibe(
+		body.antiVibe ?? body.anti_vibe ?? body.exclude ?? body.excludeVibe
+	);
 	const region = normalizeRegion(body.region);
 
 	const likeTitlesRaw: string[] = [];
@@ -544,6 +817,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				type: selectedType,
 				types: selectedTypes,
 				decade: decade?.id || null,
+				maturity,
 				notesWeight,
 				userGenres: selectedGenres,
 				prompt: vibePrompt,
@@ -555,7 +829,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// 🤫 Movies/TV: surronster vibe → newest @surronster uploads
-	if (!isSongs && isSurronsterVibeSecret(secretHaystack)) {
+	if (!isSongs && !isGames && isSurronsterVibeSecret(secretHaystack)) {
 		const vids = await fetchSurronsterNewest(REC_LIMIT);
 		if (!vids.length) throw error(502, 'could not load Sur Ronster videos');
 		const recommendations = surronsterVidRecommendations(vids);
@@ -567,6 +841,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				type: selectedType,
 				types: selectedTypes,
 				decade: decade?.id || null,
+				maturity,
 				notesWeight,
 				userGenres: selectedGenres,
 				prompt: vibePrompt,
@@ -588,7 +863,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			prompt: notesOnly,
 			likeTitles,
 			decade,
-			notesWeight
+			notesWeight,
+			maturity,
+			antiVibe
 		});
 
 		try {
@@ -650,6 +927,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					type: selectedType,
 					types: selectedTypes,
 					decade: decade?.id || null,
+					maturity,
 					notesWeight,
 					userGenres: selectedGenres,
 					prompt: vibePrompt,
@@ -661,6 +939,150 @@ export const POST: RequestHandler = async ({ request }) => {
 		} catch (e: any) {
 			console.error('song recommend failed', e?.message || e);
 			throw error(502, e?.message || 'song recommendation failed');
+		}
+	}
+
+	// games = gemini picks titles, IGDB fills covers / platforms / store links
+	if (isGames) {
+		if (howManyKeysWeGot() <= 0) {
+			throw error(503, 'game recommendations need GEMINI_API_KEYS configured');
+		}
+		if (howManyIgdbCreds() <= 0) {
+			throw error(
+				503,
+				'game recommendations need IGDB_CLIENT_ID + IGDB_CLIENT_SECRET (Twitch app)'
+			);
+		}
+
+		const gamesPrompt = buildGamesConciergePrompt({
+			genres: selectedGenres,
+			prompt: notesOnly,
+			likeTitles,
+			decade,
+			notesWeight,
+			maturity,
+			priceRange,
+			antiVibe,
+			platforms: targetPlatforms
+		});
+		const priceLabel = priceRangeBadge(priceRange);
+
+		try {
+			const gemini = await callGeminiFlash(gamesPrompt, { json: true, maxOutputTokens: 3072 });
+			let gameRecs: GeminiGameRec[];
+			try {
+				gameRecs = parseGeminiGameRecs(gemini.text);
+			} catch (parseErr: any) {
+				console.error(
+					'game json go boom',
+					parseErr?.message || parseErr,
+					String(gemini.text || '').slice(0, 400)
+				);
+				throw new Error('games model returned bad JSON — try again');
+			}
+			if (!gameRecs.length) throw new Error('gemini returned no games');
+
+			const filteredGames = decade
+				? gameRecs.filter((r) => yearInDecade(r.releaseYear, decade))
+				: gameRecs;
+			const gameList = filteredGames.length ? filteredGames : gameRecs;
+
+			const recommendations = [];
+			for (const rec of gameList) {
+				const hit = await lookupIgdbGame({
+					searchQuery: rec.searchQuery,
+					title: rec.title,
+					releaseYear: rec.releaseYear
+				});
+
+				if (hit && !gamePassesMaturity(hit.maturityCert, maturity)) {
+					continue;
+				}
+
+				const title = hit?.title || rec.title;
+				const year = hit?.year || rec.releaseYear || undefined;
+				const rawStores = hit?.stores?.length
+					? hit.stores
+					: [
+							{
+								name: 'IGDB',
+								url: `https://www.igdb.com/search?type=1&q=${encodeURIComponent(title)}`,
+								logo: null
+							}
+						];
+				const storeLinks = buildStoreLinksForPlatforms(
+					rawStores,
+					targetPlatforms,
+					hit?.platforms || []
+				);
+				const primaryFallback = primaryStoreLink(rawStores, targetPlatforms);
+				const primaryUrl = storeLinks[0]?.url || primaryFallback?.url || null;
+				const primaryStoreName = storeLinks[0]?.store || primaryFallback?.name || undefined;
+				const platformLabels =
+					hit?.platforms?.map((p) => p.abbreviation || p.name).filter(Boolean) || [];
+
+				recommendations.push({
+					title,
+					cover: hit?.coverUrl || '',
+					genres: rec.actualGenres.length ? rec.actualGenres : hit?.genres || [],
+					pitch: rec.matchReason,
+					mediaType: 'Game',
+					seasonInfo: year,
+					rating: hit?.rating ?? undefined,
+					content_rating: hit?.contentRating || undefined,
+					price_range: priceRange || undefined,
+					priceLabel: priceLabel || undefined,
+					releaseYear: year,
+					searchQuery: rec.searchQuery,
+					igdb_id: hit?.id,
+					// Hardware only — never mix storefront names into platforms
+					platforms: platformLabels,
+					region: undefined,
+					storeLinks,
+					// Storefronts only (legacy consumers); UI uses storeLinks + platforms
+					providers: storeLinks.map((s) => ({
+						name: s.platform || s.store,
+						logo: null,
+						url: s.url || null
+					})),
+					watch_link: primaryUrl,
+					zflix_url: primaryUrl,
+					listen_url: primaryUrl,
+					store_name: primaryStoreName,
+					likeTitle: likeLabel || undefined,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					kind: 'game' as const
+				});
+
+				if (recommendations.length >= REC_LIMIT) break;
+			}
+
+			if (!recommendations.length) {
+				throw new Error('no games passed IGDB lookup / maturity gate');
+			}
+
+			return json({
+				ok: true,
+				mocked: false,
+				mode: 'games',
+				params: {
+					type: selectedType,
+					types: selectedTypes,
+					decade: decade?.id || null,
+					maturity,
+					priceRange,
+					platforms: targetPlatforms.length ? targetPlatforms : undefined,
+					notesWeight,
+					userGenres: selectedGenres,
+					prompt: vibePrompt,
+					likeTitles: likeTitles.length ? likeTitles : undefined
+				},
+				recommendation: recommendations[0],
+				recommendations
+			});
+		} catch (e: any) {
+			console.error('game recommend failed', e?.message || e);
+			throw error(502, e?.message || 'game recommendation failed');
 		}
 	}
 
@@ -676,14 +1098,39 @@ export const POST: RequestHandler = async ({ request }) => {
 				types: selectedTypes,
 				userGenres: selectedGenres,
 				notes: notesOnly,
-				limit: REC_LIMIT,
+				limit: maturity && maturity !== 'mature' ? Math.min(REC_LIMIT + 5, 10) : REC_LIMIT,
 				yearFrom: decade?.yearFrom ?? null,
 				yearTo: decade?.yearTo ?? null
 			});
 
 			if (similars.length) {
-				const recommendations = await Promise.all(
+				const gated = await Promise.all(
 					similars.map(async (similar) => {
+						const gate = await passesMaturityGate({
+							tmdbId: similar.id,
+							mediaType: similar.mediaType,
+							maturity
+						});
+						return gate.ok ? { similar, certification: gate.certification } : null;
+					})
+				);
+				const picks = gated
+					.filter((x): x is { similar: (typeof similars)[number]; certification: string | null } =>
+						Boolean(x)
+					)
+					.slice(0, REC_LIMIT);
+
+				// All neighbors failed the rating gate — fall through to Gemini/catalog
+				if (picks.length) {
+					const recommendations = [];
+					for (const { similar, certification } of picks) {
+						const seasons = await resolveTvSeasons(
+							similar.id,
+							similar.mediaType,
+							seriesLength
+						);
+						if (!seasons.ok) continue;
+
 						const watch = await fetchWatchProviders({
 							tmdbId: similar.id,
 							mediaType: similar.mediaType,
@@ -698,7 +1145,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						const searchQuery = similar.year
 							? `${similar.title} (${similar.year})`
 							: similar.title;
-						return {
+						recommendations.push({
 							title: similar.title,
 							cover: similar.posterUrl || '',
 							coverFallbacks: similar.fallbackUrls || [],
@@ -711,7 +1158,10 @@ export const POST: RequestHandler = async ({ request }) => {
 							}),
 							mediaType,
 							seasonInfo: similar.year ? String(similar.year) : undefined,
+							number_of_seasons: seasons.number_of_seasons || undefined,
+							seasons_label: seasons.seasons_label || undefined,
 							rating: similar.rating ?? undefined,
+							content_rating: certification || undefined,
 							releaseYear: similar.year || undefined,
 							searchQuery,
 							tmdb_id: similar.id,
@@ -723,27 +1173,32 @@ export const POST: RequestHandler = async ({ request }) => {
 							zflix_url: getZflixUrl(similar.title),
 							likeTitle: similar.referenceTitle,
 							likeTitles: similar.referenceTitles
-						};
-					})
-				);
+						});
+						if (recommendations.length >= REC_LIMIT) break;
+					}
 
-				return json({
-					ok: true,
-					mocked: false,
-					mode: 'similar',
-					params: {
-						type: selectedType,
-						types: selectedTypes,
-						decade: decade?.id || null,
-						notesWeight,
-						userGenres: selectedGenres,
-						prompt: vibePrompt,
-						likeTitles: similars[0].referenceTitles,
-						likeTitle: similars[0].referenceTitle
-					},
-					recommendation: recommendations[0],
-					recommendations
-				});
+					if (recommendations.length) {
+						return json({
+							ok: true,
+							mocked: false,
+							mode: 'similar',
+							params: {
+								type: selectedType,
+								types: selectedTypes,
+								decade: decade?.id || null,
+								maturity,
+								seriesLength,
+								notesWeight,
+								userGenres: selectedGenres,
+								prompt: vibePrompt,
+								likeTitles: similars[0].referenceTitles,
+								likeTitle: similars[0].referenceTitle
+							},
+							recommendation: recommendations[0],
+							recommendations
+						});
+					}
+				}
 			}
 		} catch (e: any) {
 			console.error('similar-to path failed, continuing', e?.message || e);
@@ -766,7 +1221,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				prompt: conciergePromptText || vibePrompt,
 				likeTitles,
 				decade,
-				notesWeight
+				notesWeight,
+				maturity,
+				seriesLength,
+				antiVibe
 			});
 			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 3072 });
 			const parsedRecs = parseGeminiRecs(gemini.text);
@@ -776,52 +1234,72 @@ export const POST: RequestHandler = async ({ request }) => {
 				: parsedRecs;
 			const recs = decadeFiltered.length ? decadeFiltered : parsedRecs;
 
-			const recommendations = await Promise.all(
-				recs.map(async (rec) => {
-					const tmdb = await searchTmdbPoster({
-						searchQuery: rec.searchQuery,
-						releaseYear: rec.releaseYear,
-						mediaTypeHint: rec.mediaType
-					});
-					const tmdbId = tmdb?.id ?? 0;
-					const tmdbKind = tmdb?.mediaType ?? mediaTypeToTmdb(rec.mediaType);
-					const watch =
-						tmdbId > 0
-							? await fetchWatchProviders({
-									tmdbId,
-									mediaType: tmdbKind,
-									region,
-									title: rec.title
-								})
-							: { region, providers: [], watchLink: null };
-					const trailerKey =
-						tmdbId > 0
-							? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind })
-							: null;
+			// Sequential enrich — parallel TMDB fan-out was rate-limiting posters to initials
+			const enriched = [];
+			for (const rec of recs) {
+				const tmdb = await searchTmdbPoster({
+					searchQuery: rec.searchQuery || rec.title,
+					releaseYear: rec.releaseYear,
+					titleFallback: rec.title,
+					mediaTypeHint: rec.mediaType
+				});
+				const tmdbId = tmdb?.id ?? 0;
+				const tmdbKind = tmdb?.mediaType ?? mediaTypeToTmdb(rec.mediaType);
+				const gate =
+					tmdbId > 0
+						? await passesMaturityGate({
+								tmdbId,
+								mediaType: tmdbKind,
+								maturity
+							})
+						: { ok: true, certification: null as string | null };
+				if (!gate.ok) continue;
 
-					return {
-						title: rec.title,
-						cover: tmdb?.posterUrl || '',
-						coverFallbacks: tmdb?.fallbackUrls || [],
-						genres: rec.actualGenres,
-						pitch: rec.matchReason,
-						mediaType: rec.mediaType,
-						seasonInfo: rec.releaseYear ? String(rec.releaseYear) : undefined,
-						rating: tmdb?.rating ?? undefined,
-						releaseYear: rec.releaseYear,
-						searchQuery: rec.searchQuery,
-						tmdb_id: tmdbId || undefined,
-						media_type: selectedTypes.length === 1 ? selectedTypes[0] : undefined,
-						trailer_youtube_key: trailerKey || undefined,
-						region: watch.region,
-						providers: watch.providers,
-						watch_link: watch.watchLink,
-						zflix_url: getZflixUrl(rec.title),
-						likeTitle: likeLabel || undefined,
-						likeTitles: likeTitles.length ? likeTitles : undefined
-					};
-				})
-			);
+				const seasons = await resolveTvSeasons(tmdbId, tmdbKind, seriesLength);
+				if (!seasons.ok) continue;
+
+				const watch =
+					tmdbId > 0
+						? await fetchWatchProviders({
+								tmdbId,
+								mediaType: tmdbKind,
+								region,
+								title: rec.title
+							})
+						: { region, providers: [], watchLink: null };
+				const trailerKey =
+					tmdbId > 0
+						? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind })
+						: null;
+
+				enriched.push({
+					title: rec.title,
+					cover: tmdb?.posterUrl || '',
+					coverFallbacks: tmdb?.fallbackUrls || [],
+					genres: rec.actualGenres,
+					pitch: rec.matchReason,
+					mediaType: rec.mediaType,
+					seasonInfo: rec.releaseYear ? String(rec.releaseYear) : undefined,
+					number_of_seasons: seasons.number_of_seasons || undefined,
+					seasons_label: seasons.seasons_label || undefined,
+					rating: tmdb?.rating ?? undefined,
+					content_rating: gate.certification || undefined,
+					releaseYear: rec.releaseYear,
+					searchQuery: rec.searchQuery,
+					tmdb_id: tmdbId || undefined,
+					media_type: selectedTypes.length === 1 ? selectedTypes[0] : undefined,
+					trailer_youtube_key: trailerKey || undefined,
+					region: watch.region,
+					providers: watch.providers,
+					watch_link: watch.watchLink,
+					zflix_url: getZflixUrl(rec.title),
+					likeTitle: likeLabel || undefined,
+					likeTitles: likeTitles.length ? likeTitles : undefined
+				});
+			}
+
+			const recommendations = enriched;
+			if (!recommendations.length) throw new Error('all gemini picks failed maturity gate');
 
 			return json({
 				ok: true,
@@ -831,6 +1309,8 @@ export const POST: RequestHandler = async ({ request }) => {
 					type: selectedType,
 					types: selectedTypes,
 					decade: decade?.id || null,
+					maturity,
+					seriesLength,
 					notesWeight,
 					userGenres: selectedGenres,
 					prompt: vibePrompt,
@@ -856,9 +1336,19 @@ export const POST: RequestHandler = async ({ request }) => {
 			yearFrom: decade?.yearFrom ?? null,
 			yearTo: decade?.yearTo ?? null,
 			intent: {
-				wantsSeries: /\b(1\s*season|episodes?|series)\b/i.test(catalogPrompt) ? true : null,
+				wantsSeries:
+					seriesLength || /\b(1\s*season|episodes?|series)\b/i.test(catalogPrompt)
+						? true
+						: null,
 				wantsMovie: /\b(movie|film)\b/i.test(catalogPrompt) ? true : null,
-				maxSeasons: /\b1\s*season\b/i.test(catalogPrompt) ? 1 : null,
+				maxSeasons:
+					seriesLength === 'mini'
+						? 1
+						: seriesLength === 'short'
+							? 3
+							: /\b1\s*season\b/i.test(catalogPrompt)
+								? 1
+								: null,
 				maxEpisodes: null,
 				titleHint: null,
 				likeTitle,
@@ -870,18 +1360,41 @@ export const POST: RequestHandler = async ({ request }) => {
 				matchReason: ''
 			}
 		},
-		REC_LIMIT
+		maturity && maturity !== 'mature' ? REC_LIMIT + 4 : REC_LIMIT
 	);
 
-	const recommendations = await Promise.all(
-		hits.map(async (hit) => {
+	const catalogEnriched = [];
+	for (const hit of hits) {
+			if (seriesLength && hit.seasons > 0 && !seasonCountAllowed(hit.seasons, seriesLength)) {
+				continue;
+			}
+
 			const tmdb = await searchTmdbPoster({
 				searchQuery: hit.title,
 				releaseYear: String(hit.year),
+				titleFallback: hit.title,
 				mediaTypeHint: kindLabel(hit.kind)
 			});
 			const tmdbId = tmdb?.id || hit.tmdbId;
 			const tmdbKind = tmdb?.mediaType || hit.mediaType;
+			const gate = tmdbId
+				? await passesMaturityGate({
+						tmdbId,
+						mediaType: tmdbKind,
+						maturity
+					})
+				: { ok: true, certification: null as string | null };
+			if (!gate.ok) continue;
+
+			const seasons = tmdbId
+				? await resolveTvSeasons(tmdbId, tmdbKind, seriesLength)
+				: {
+						ok: seasonCountAllowed(hit.seasons || null, seriesLength),
+						number_of_seasons: hit.seasons > 0 ? hit.seasons : null,
+						seasons_label: seasonsLabel(hit.seasons > 0 ? hit.seasons : null)
+					};
+			if (!seasons.ok) continue;
+
 			const watch = await fetchWatchProviders({
 				tmdbId,
 				mediaType: tmdbKind,
@@ -897,7 +1410,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					? `Because you asked for “${vibePrompt.slice(0, 80)}”, ${hit.title} fits from our catalog.`
 					: `${hit.title} fits your ${formatLabel(selectedTypes)} filters.`;
 
-			return {
+			catalogEnriched.push({
 				title: hit.title,
 				cover: tmdb?.posterUrl || hit.cover,
 				coverFallbacks: [
@@ -908,7 +1421,14 @@ export const POST: RequestHandler = async ({ request }) => {
 				pitch,
 				mediaType: kindLabel(hit.kind),
 				seasonInfo: seasonInfo(hit),
+				number_of_seasons:
+					seasons.number_of_seasons || (hit.seasons > 0 ? hit.seasons : undefined),
+				seasons_label:
+					seasons.seasons_label ||
+					seasonsLabel(hit.seasons > 0 ? hit.seasons : null) ||
+					undefined,
 				rating: tmdb?.rating ?? hit.rating,
+				content_rating: gate.certification || undefined,
 				releaseYear: String(hit.year),
 				searchQuery: hit.title,
 				tmdb_id: tmdbId,
@@ -920,9 +1440,11 @@ export const POST: RequestHandler = async ({ request }) => {
 				zflix_url: getZflixUrl(hit.title),
 				likeTitle: likeLabel || undefined,
 				likeTitles: likeTitles.length ? likeTitles : undefined
-			};
-		})
-	);
+			});
+			if (catalogEnriched.length >= REC_LIMIT) break;
+	}
+
+	const recommendations = catalogEnriched.slice(0, REC_LIMIT);
 
 	return json({
 		ok: true,
@@ -932,6 +1454,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			type: selectedType,
 			types: selectedTypes,
 			decade: decade?.id || null,
+			maturity,
+			seriesLength,
 			notesWeight,
 			userGenres: selectedGenres,
 			prompt: vibePrompt,
@@ -946,7 +1470,8 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = async () => {
 	return json({
 		ok: true,
-		msg: 'POST { types, genres, prompt, likeTitles, region, decade, notesWeight }',
-		keys_loaded: howManyKeysWeGot()
+		msg: 'POST { types, genres, prompt, antiVibe, likeTitles, region, decade, maturity, priceRange, platforms, seriesLength, notesWeight }',
+		keys_loaded: howManyKeysWeGot(),
+		igdb: howManyIgdbCreds() > 0
 	});
 };

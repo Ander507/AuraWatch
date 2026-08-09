@@ -6,13 +6,13 @@
 
 	export type LikeHit = {
 		id: number;
-		mediaType: 'movie' | 'tv' | 'song' | 'artist';
+		mediaType: 'movie' | 'tv' | 'song' | 'artist' | 'game';
 		title: string;
 		subtitle?: string | null;
 		posterUrl: string | null;
 		year: string | null;
 		rating: number | null;
-		kindLabel: 'MOVIE' | 'TV' | 'SONG' | 'ARTIST';
+		kindLabel: 'MOVIE' | 'TV' | 'SONG' | 'ARTIST' | 'GAME';
 	};
 
 	let {
@@ -28,7 +28,7 @@
 		id?: string;
 		variant?: 'dark' | 'desktop';
 		max?: number;
-		kind?: 'media' | 'music';
+		kind?: 'media' | 'music' | 'games';
 	} = $props();
 
 	let open = $state(false);
@@ -137,7 +137,7 @@
 
 		try {
 			const res = await fetch(
-				`/api/search?q=${encodeURIComponent(trimmed)}&limit=8&kind=${kind === 'music' ? 'music' : 'media'}`,
+				`/api/search?q=${encodeURIComponent(trimmed)}&limit=8&kind=${kind === 'music' ? 'music' : kind === 'games' ? 'games' : 'media'}`,
 				{ signal: ctrl.signal }
 			);
 			const data = await res.json().catch(() => ({}));
@@ -324,7 +324,9 @@
 					? 'Add another…'
 					: kind === 'music'
 						? 'Search a song or artist…'
-						: 'Search a title…'}
+						: kind === 'games'
+							? 'Search a game…'
+							: 'Search a title…'}
 				{disabled}
 				autocomplete="off"
 				autocapitalize="off"

@@ -2,11 +2,12 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { searchTmdbTitles } from '$lib/server/tmdbSearch';
 import { searchItunesMusic } from '$lib/server/itunesSearch';
+import { searchIgdbGames } from '$lib/server/igdbSearch';
 import { fetchOnMyOwnTrack, isSurronSongSecret } from '$lib/server/easterEggs';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const q = (url.searchParams.get('q') || url.searchParams.get('query') || '').trim();
-	// kind=music for songs, anything else = tmdb movies/tv
+	// kind=music for songs, kind=games for IGDB, anything else = tmdb movies/tv
 	let kind = (url.searchParams.get('kind') || url.searchParams.get('type') || 'media')
 		.toLowerCase()
 		.trim();
@@ -18,6 +19,14 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	let limit = Number(url.searchParams.get('limit') || 8);
 	if (!Number.isFinite(limit)) limit = 8;
+
+	if (kind === 'game' || kind === 'games' || kind === 'gaming') {
+		const { results, total } = await searchIgdbGames(q, { limit });
+		return json(
+			{ ok: true, query: q, kind: 'games', total, results },
+			{ headers: { 'Cache-Control': 'private, max-age=120' } }
+		);
+	}
 
 	if (kind === 'music' || kind === 'song' || kind === 'songs') {
 		// 🤫 Surron / Talaria → only On My Own

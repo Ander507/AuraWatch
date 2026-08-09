@@ -14,7 +14,6 @@ const inflight = new Map<string, Promise<CacheEntry>>();
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 min success
 const NEGATIVE_TTL_MS = 45 * 1000; // soft-fail / empty
-const RATE_LIMIT_TTL_MS = 90 * 1000; // 429 cool-down
 
 const MAX_ENTRIES = 400;
 
@@ -70,8 +69,11 @@ export async function cachedJsonFetch(
 				}
 
 				let ttl = opts?.ttlMs ?? DEFAULT_TTL_MS;
-				if (status === 429 || status === 503) ttl = RATE_LIMIT_TTL_MS;
-				else if (!res.ok) ttl = NEGATIVE_TTL_MS;
+				// Never cache rate-limits — parallel poster lookups were poisoning later picks
+				if (status === 429 || status === 503) {
+					return { expires: 0, status, data };
+				}
+				if (!res.ok) ttl = NEGATIVE_TTL_MS;
 				else if (
 					data == null ||
 					(typeof data === 'object' &&

@@ -36,19 +36,43 @@ export function tmdbImageUrl(
 	return `${base}${p}`;
 }
 
+/** Strip soundtrack / vibe clutter Gemini sometimes appends to searchQuery. */
+function cleanTitleNoise(title: string): string {
+	let t = String(title || '').trim();
+	// "Drive (2011) featuring Nightcall" / "Cherry — Juice WRLD soundtrack"
+	t = t.replace(
+		/\s*[-–—:|]\s*(featuring|features|feat\.?|with|soundtrack|ost|needle.?drop|song|music)\b.*$/i,
+		''
+	);
+	t = t.replace(/\s*\((?:featuring|soundtrack|ost|with songs?).*\)$/i, '');
+	t = t.replace(/\s+(featuring|features|feat\.?)\s+.+$/i, '');
+	return t.trim();
+}
+
 export function parseSearchQuery(searchQuery: string, releaseYear?: string | null) {
 	const raw = String(searchQuery || '').trim();
-	// "Charlotte (2015)" or "Charlotte 2015"
-	const paren = raw.match(/^(.*?)\s*\((\d{4})\)\s*$/);
-	if (paren) {
-		return { title: paren[1].trim(), year: paren[2] };
+	// "Charlotte (2015)" exactly, or "Charlotte (2015) featuring …" (year not only at end)
+	const parenEnd = raw.match(/^(.*?)\s*\((\d{4})\)\s*$/);
+	if (parenEnd) {
+		return { title: cleanTitleNoise(parenEnd[1]), year: parenEnd[2] };
+	}
+	const parenInline = raw.match(/^(.*?)\s*\((\d{4})\)\s+/);
+	if (parenInline) {
+		// Keep title before year; ignore trailing soundtrack notes
+		return {
+			title: cleanTitleNoise(parenInline[1]),
+			year: parenInline[2]
+		};
 	}
 	const trailing = raw.match(/^(.*?)\s+(\d{4})\s*$/);
 	if (trailing) {
-		return { title: trailing[1].trim(), year: trailing[2] };
+		return { title: cleanTitleNoise(trailing[1]), year: trailing[2] };
 	}
 	const y = releaseYear ? String(releaseYear).slice(0, 4) : null;
-	return { title: raw, year: y && /^\d{4}$/.test(y) ? y : null };
+	return {
+		title: cleanTitleNoise(raw),
+		year: y && /^\d{4}$/.test(y) ? y : null
+	};
 }
 
 export type TmdbHit = {
@@ -75,6 +99,27 @@ type ScoredResult = {
 
 function normTitle(s: string) {
 	return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** Query variants — subtitles / punctuation often break exact TMDB hits. */
+export function titleSearchVariants(title: string): string[] {
+	const base = cleanTitleNoise(title);
+	if (!base) return [];
+	const out: string[] = [];
+	const push = (t: string) => {
+		const s = t.trim();
+		if (!s || out.some((x) => normTitle(x) === normTitle(s))) return;
+		out.push(s);
+	};
+	push(base);
+	// "F9: The Fast Saga" → "F9"
+	const beforeColon = base.split(/[:–—]/)[0];
+	if (beforeColon) push(beforeColon);
+	// "The King of Staten Island" → also try without leading The
+	push(base.replace(/^the\s+/i, ''));
+	// Drop trailing edition tags
+	push(base.replace(/\s*[\(:].*$/, ''));
+	return out;
 }
 
 function uniqueUrls(...urls: Array<string | null | undefined>): string[] {
@@ -213,7 +258,12 @@ async function searchKindResults(opts: {
 	}
 
 	const url = withKey(`https://api.themoviedb.org/3/search/${kind}?${params}`, apiKey, useBearer);
-	const res = await tmdbJson(url, headers);
+	let res = await tmdbJson(url, headers);
+	// One soft retry on rate-limit (common when enriching 5 picks in parallel)
+	if (res.status === 429) {
+		await new Promise((r) => setTimeout(r, 280));
+		res = await tmdbJson(url, headers);
+	}
 	if (!res.ok || !res.data) return [];
 	const data = res.data;
 	const results: any[] = data?.results || [];
@@ -301,116 +351,138 @@ async function enrichHitArt(hit: ScoredResult): Promise<TmdbHit> {
 export async function searchTmdbPoster(opts: {
 	searchQuery: string;
 	releaseYear?: string | null;
+	/** Bare title fallback when searchQuery is noisy (soundtrack notes, etc.) */
+	titleFallback?: string | null;
 	mediaTypeHint?: string | null; // "TV Series" | "Movie" | "Anime Series"
 }): Promise<TmdbHit | null> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey) return null;
 
-	const { title, year } = parseSearchQuery(opts.searchQuery, opts.releaseYear);
-	if (!title) return null;
+	const parsed = parseSearchQuery(opts.searchQuery, opts.releaseYear);
+	const fallbackTitle = cleanTitleNoise(String(opts.titleFallback || ''));
+	const year =
+		parsed.year ||
+		(opts.releaseYear && /^\d{4}$/.test(String(opts.releaseYear).slice(0, 4))
+			? String(opts.releaseYear).slice(0, 4)
+			: null);
+
+	const variants = titleSearchVariants(parsed.title || fallbackTitle);
+	if (fallbackTitle) {
+		for (const v of titleSearchVariants(fallbackTitle)) {
+			if (!variants.some((x) => normTitle(x) === normTitle(v))) variants.push(v);
+		}
+	}
+	if (!variants.length) return null;
 
 	const hint = String(opts.mediaTypeHint || '').toLowerCase();
 	const preferTv = hint.includes('series') || hint.includes('anime') || hint.includes('tv');
-	const preferMovie = hint.includes('movie') && !preferTv;
+	const preferMovie =
+		(hint.includes('movie') || hint.includes('film')) && !preferTv;
 
-	const attempts: Array<'tv' | 'movie'> = preferMovie
-		? ['movie', 'tv']
-		: preferTv
-			? ['tv', 'movie']
-			: ['tv', 'movie'];
+	// Default movie-first — TV-first was orphaning common film posters
+	const attempts: Array<'tv' | 'movie'> = preferTv
+		? ['tv', 'movie']
+		: ['movie', 'tv'];
 
 	const yearPasses: Array<string | null> = year ? [year, null] : [null];
 
-	for (const yearFilter of yearPasses) {
-		for (const kind of attempts) {
-			try {
-				const scored = await searchKindResults({
-					title,
-					year: yearFilter,
-					kind,
-					apiKey,
-					useBearer,
-					headers
-				});
-				if (!scored.length) continue;
+	for (const title of variants) {
+		for (const yearFilter of yearPasses) {
+			for (const kind of attempts) {
+				try {
+					const scored = await searchKindResults({
+						title,
+						year: yearFilter,
+						kind,
+						apiKey,
+						useBearer,
+						headers
+					});
+					if (!scored.length) continue;
 
-				const best = pickBestWithArt(scored);
-				if (!best) continue;
+					const best = pickBestWithArt(scored);
+					if (!best) continue;
 
-				// Collect sibling posters as client-side fallbacks
-				const siblingPosters = scored
-					.filter((c) => c.id !== best.id && c.poster_path)
-					.slice(0, 3)
-					.map((c) => tmdbImageUrl(c.poster_path, 'w500'));
+					// Collect sibling posters as client-side fallbacks
+					const siblingPosters = scored
+						.filter((c) => c.id !== best.id && c.poster_path)
+						.slice(0, 3)
+						.map((c) => tmdbImageUrl(c.poster_path, 'w500'));
 
-				const hit = await enrichHitArt(best);
-				hit.fallbackUrls = uniqueUrls(...hit.fallbackUrls, ...siblingPosters);
+					const hit = await enrichHitArt(best);
+					hit.fallbackUrls = uniqueUrls(...hit.fallbackUrls, ...siblingPosters);
 
-				// If we still have no art, try the next candidate with a poster
-				if (!hit.posterUrl) {
-					const alt = scored.find((c) => c.id !== best.id && c.poster_path);
-					if (alt) {
-						const altHit = await enrichHitArt(alt);
-						if (altHit.posterUrl) return altHit;
+					// If we still have no art, try the next candidate with a poster
+					if (!hit.posterUrl) {
+						const alt = scored.find((c) => c.id !== best.id && c.poster_path);
+						if (alt) {
+							const altHit = await enrichHitArt(alt);
+							if (altHit.posterUrl) return altHit;
+						}
+						continue;
 					}
-					continue;
-				}
 
-				return hit;
-			} catch (e) {
-				console.warn('tmdb search fail', kind, e);
+					return hit;
+				} catch (e) {
+					console.warn('tmdb search fail', kind, e);
+				}
 			}
 		}
 	}
 
 	// Last resort: multi-search (catches odd title formatting)
-	try {
-		const params = new URLSearchParams({
-			query: title,
-			include_adult: 'false',
-			language: 'en-US',
-			page: '1'
-		});
-		const url = withKey(
-			`https://api.themoviedb.org/3/search/multi?${params}`,
-			apiKey,
-			useBearer
-		);
-		const res = await tmdbJson(url, headers);
-		if (res.ok && res.data) {
-			const data = res.data;
-			const want = normTitle(title);
-			const raw: any[] = data?.results || [];
-			const scored: ScoredResult[] = [];
-			for (const r of raw.slice(0, 12)) {
-				if (r.media_type !== 'movie' && r.media_type !== 'tv') continue;
-				const name = String(r.title || r.name || '');
-				let score = 0;
-				const n = normTitle(name);
-				if (n === want) score += 10;
-				else if (n.includes(want) || want.includes(n)) score += 5;
-				if (year) {
-					const date = r.release_date || r.first_air_date || '';
-					if (String(date).startsWith(year)) score += 8;
+	for (const title of variants.slice(0, 2)) {
+		try {
+			const params = new URLSearchParams({
+				query: title,
+				include_adult: 'false',
+				language: 'en-US',
+				page: '1'
+			});
+			const url = withKey(
+				`https://api.themoviedb.org/3/search/multi?${params}`,
+				apiKey,
+				useBearer
+			);
+			const res = await tmdbJson(url, headers);
+			if (res.ok && res.data) {
+				const data = res.data;
+				const want = normTitle(title);
+				const raw: any[] = data?.results || [];
+				const scored: ScoredResult[] = [];
+				for (const r of raw.slice(0, 12)) {
+					if (r.media_type !== 'movie' && r.media_type !== 'tv') continue;
+					const name = String(r.title || r.name || '');
+					let score = 0;
+					const n = normTitle(name);
+					if (n === want) score += 10;
+					else if (n.includes(want) || want.includes(n)) score += 5;
+					if (year) {
+						const date = r.release_date || r.first_air_date || '';
+						if (String(date).startsWith(year)) score += 8;
+					}
+					if (r.poster_path) score += 5; // strongly prefer hits with art
+					scored.push({
+						id: r.id,
+						mediaType: r.media_type,
+						title: name || title,
+						poster_path: r.poster_path || null,
+						backdrop_path: r.backdrop_path || null,
+						year: (r.release_date || r.first_air_date || '').slice(0, 4) || year,
+						rating: typeof r.vote_average === 'number' ? r.vote_average : null,
+						score
+					});
 				}
-				if (r.poster_path) score += 3;
-				scored.push({
-					id: r.id,
-					mediaType: r.media_type,
-					title: name || title,
-					poster_path: r.poster_path || null,
-					backdrop_path: r.backdrop_path || null,
-					year: (r.release_date || r.first_air_date || '').slice(0, 4) || year,
-					rating: typeof r.vote_average === 'number' ? r.vote_average : null,
-					score
-				});
+				scored.sort((a, b) => b.score - a.score);
+				const best = pickBestWithArt(scored);
+				if (best) {
+					const hit = await enrichHitArt(best);
+					if (hit.posterUrl) return hit;
+				}
 			}
-			scored.sort((a, b) => b.score - a.score);
-			const best = pickBestWithArt(scored);
-			if (best) return enrichHitArt(best);
+		} catch (e) {
+			console.warn('tmdb multi poster fail', e);
 		}
-	} catch (e) {
-		console.warn('tmdb multi poster fail', e);
 	}
 
 	return null;

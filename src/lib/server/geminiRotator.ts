@@ -16,6 +16,14 @@ const BAD_TTL_MS = 1000 * 60 * 5;
 // values look like "models/gemini-2.0-flash" (with the models/ prefix!!)
 const modelCache = new Map<string, string>();
 
+// Prefer these before listModels — cuts a cold-start RTT when cache is empty (Vercel).
+const KNOWN_FLASH_MODELS = [
+	'models/gemini-2.5-flash',
+	'models/gemini-2.0-flash',
+	'models/gemini-flash-latest',
+	'models/gemini-1.5-flash'
+];
+
 function keyId(k: string) {
 	return k.slice(0, 12);
 }
@@ -75,6 +83,14 @@ export async function getAvailableModel(apiKey: string): Promise<string | null> 
 	const cached = modelCache.get(keyId(apiKey));
 	if (cached) return cached;
 
+	// Optimistic seed: skip listModels on cold start. callGeminiFlash rediscovers on 404.
+	const seed = KNOWN_FLASH_MODELS[0];
+	modelCache.set(keyId(apiKey), seed);
+	return seed;
+}
+
+/** Force listModels discovery (used by /api/health warm-up + 404 recovery). */
+export async function discoverModelViaList(apiKey: string): Promise<string | null> {
 	const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
 	try {
 		const resp = await fetch(url);
@@ -83,7 +99,6 @@ export async function getAvailableModel(apiKey: string): Promise<string | null> 
 		const data = await resp.json();
 		const models: any[] = data?.models || [];
 
-		// prefer flash
 		for (const model of models) {
 			const name: string | undefined = model?.name;
 			const methods: string[] = model?.supportedGenerationMethods || [];
@@ -98,7 +113,6 @@ export async function getAvailableModel(apiKey: string): Promise<string | null> 
 			}
 		}
 
-		// fallback to first gemini that can generateContent
 		for (const model of models) {
 			const name: string | undefined = model?.name;
 			const methods: string[] = model?.supportedGenerationMethods || [];
@@ -236,9 +250,20 @@ export async function callGeminiFlash(
 			}
 
 			if (res.status === 404) {
-				// model gone for this key — bust cache and try rediscovery once
+				// model gone for this key — try next known flash, then listModels
 				modelCache.delete(keyId(keyToUse));
-				const retryModel = await getAvailableModel(keyToUse);
+				let retryModel: string | null = null;
+				const failed = modelPath;
+				for (const candidate of KNOWN_FLASH_MODELS) {
+					if (candidate === failed) continue;
+					retryModel = candidate;
+					break;
+				}
+				if (!retryModel) {
+					retryModel = await discoverModelViaList(keyToUse);
+				} else {
+					modelCache.set(keyId(keyToUse), retryModel);
+				}
 				if (retryModel && retryModel !== modelPath) {
 					const retryUrl = `https://generativelanguage.googleapis.com/v1beta/${retryModel}:generateContent?key=${keyToUse}`;
 					const res2 = await fetch(retryUrl, {
@@ -256,6 +281,31 @@ export async function callGeminiFlash(
 							keyUsed: keyId(keyToUse),
 							model: retryModel
 						};
+					}
+					// known seed failed — fall through to listModels once
+					if (!retryModel.includes('flash-latest')) {
+						const listed = await discoverModelViaList(keyToUse);
+						if (listed && listed !== retryModel) {
+							const res3 = await fetch(
+								`https://generativelanguage.googleapis.com/v1beta/${listed}:generateContent?key=${keyToUse}`,
+								{
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify(body)
+								}
+							);
+							if (res3.ok) {
+								const data = await res3.json();
+								const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+								startIdx = (idx + 1) % theKeys.length;
+								return {
+									text: typeof txt === 'string' ? txt : JSON.stringify(txt),
+									raw: data,
+									keyUsed: keyId(keyToUse),
+									model: listed
+								};
+							}
+						}
 					}
 				}
 				const txt = await res.text();

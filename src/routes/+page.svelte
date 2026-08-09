@@ -1,17 +1,30 @@
 <script lang="ts">
-	import { fade, fly } from 'svelte/transition';
+	import { fade, fly, slide } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import { desktopCardEntrance } from '$lib/animations/desktop';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
+	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
+	import { buildVibeSearchParams, parseVibeSearchParams, vibeShareUrl } from '$lib/vibeUrl';
+	import { rollSurpriseMe } from '$lib/surpriseMe';
+	import {
+		loadAuraList,
+		saveAuraList,
+		toggleAuraListItem,
+		makeId,
+		type AuraListItem,
+		isOnAuraList
+	} from '$lib/auraList';
 
 	const REGION_KEY = 'aurawatch_region';
 	const UI_KEY = 'aurawatch_ui';
+	const NOTES_WEIGHT_DEFAULT = 70;
 
 	type UiTheme = 'desktop' | 'minimal';
 
@@ -19,7 +32,8 @@
 		{ id: 'movie' as const, label: 'Movies' },
 		{ id: 'series' as const, label: 'TV Series' },
 		{ id: 'anime' as const, label: 'Anime' },
-		{ id: 'songs' as const, label: 'Songs' }
+		{ id: 'songs' as const, label: 'Songs' },
+		{ id: 'games' as const, label: 'Games' }
 	];
 
 	const DECADE_OPTIONS = [
@@ -29,6 +43,54 @@
 		{ id: '2000s' as const, label: '2000s' },
 		{ id: '2010s' as const, label: '2010s' },
 		{ id: '2020s' as const, label: '2020s' }
+	];
+
+	const MATURITY_OPTIONS = [
+		{ id: '' as const, label: 'Any', mediaCerts: 'All', gameCerts: 'All', songCerts: 'All' },
+		{
+			id: 'family' as const,
+			label: 'Family',
+			mediaCerts: 'G · PG',
+			gameCerts: 'E · E10+',
+			songCerts: 'Clean'
+		},
+		{
+			id: 'teen' as const,
+			label: 'Teen',
+			mediaCerts: '≤ PG-13',
+			gameCerts: '≤ T',
+			songCerts: 'Mild'
+		},
+		{
+			id: 'mature' as const,
+			label: 'Mature',
+			mediaCerts: 'R · TV-MA',
+			gameCerts: 'M · AO',
+			songCerts: 'Explicit'
+		}
+	];
+
+	const PRICE_RANGE_OPTIONS = [
+		{ id: '' as const, label: 'Any', hint: 'All prices' },
+		{ id: 'free' as const, label: 'Free', hint: '$0' },
+		{ id: 'under20' as const, label: '<$20', hint: 'Indie / Budget' },
+		{ id: 'mid' as const, label: '$20–$45', hint: 'Mid-tier' },
+		{ id: 'aaa' as const, label: '$50+', hint: 'AAA' }
+	];
+
+	const PRICE_RANGE_BADGE: Record<string, string> = {
+		free: 'Free to Play',
+		under20: 'Under $20',
+		mid: '$20–$45',
+		aaa: 'AAA'
+	};
+
+	const SERIES_LENGTH_OPTIONS = [
+		{ id: '' as const, label: 'Any', hint: 'Any length' },
+		{ id: 'mini' as const, label: '1 Season', hint: 'Miniseries' },
+		{ id: 'short' as const, label: '2–3', hint: 'Short run' },
+		{ id: 'medium' as const, label: '4–7', hint: 'Solid run' },
+		{ id: 'binge' as const, label: '8+', hint: 'Long binge' }
 	];
 
 	type FormatId = (typeof FORMAT_OPTIONS)[number]['id'];
@@ -115,6 +177,27 @@
 			'Soul',
 			'Alternative',
 			'K-Pop'
+		],
+		games: [
+			'RPG',
+			'FPS',
+			'Sandbox',
+			'Strategy',
+			'Simulation',
+			'Adventure',
+			'Horror',
+			'Platformer',
+			'Puzzle',
+			'Sports',
+			'Racing',
+			'Fighting',
+			'MOBA',
+			'Roguelike',
+			'Survival',
+			'Indie',
+			'Open World',
+			'Co-op',
+			'Competitive'
 		]
 	};
 
@@ -122,15 +205,24 @@
 	let selectedTypes = $state<FormatId[]>([]);
 	let selectedGenres = $state<string[]>([]);
 	let vibePrompt = $state('');
+	let antiVibe = $state('');
 	let likeTitles = $state<string[]>([]);
-	const NOTES_WEIGHT_DEFAULT = 70;
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
 	let watchRegion = $state('US');
 	let selectedDecade = $state('');
+	let selectedMaturity = $state('');
+	let selectedPriceRange = $state('');
+	let selectedPlatforms = $state<string[]>([]);
+	let selectedSeasonCount = $state('');
+	let showAdvanced = $state(false);
 	let isLoading = $state(false);
 	let errMsg = $state('');
 	let clockLabel = $state('');
 	let playingPreview = $state<string | null>(null); // unique key per card
+	let shareToast = $state('');
+	let shareToastTimer: ReturnType<typeof setTimeout> | null = null;
+	let auraList = $state<AuraListItem[]>([]);
+	let viewMode = $state<'match' | 'list'>('match');
 
 	type Provider = {
 		name: string;
@@ -146,6 +238,8 @@
 		genres?: string[];
 		mediaType?: string;
 		seasonInfo?: string;
+		number_of_seasons?: number;
+		seasons_label?: string;
 		rating?: number;
 		providers?: Provider[];
 		region?: string;
@@ -155,19 +249,30 @@
 		coverFallbacks?: string[];
 		coverBroken?: boolean;
 		artist?: string;
-		kind?: 'song' | 'media';
+		kind?: 'song' | 'media' | 'game';
 		listen_url?: string;
 		preview_url?: string;
 		trailer_youtube_key?: string;
+		content_rating?: string;
+		platforms?: string[];
+		price_range?: string;
+		priceLabel?: string;
+		store_name?: string;
+		storeLinks?: Array<{ platform: string; url: string; store?: string }>;
 	};
 
-	// song mode — different search kind + square covers etc
+	// song / games mode — exclusive formats
 	let isSongs = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'songs');
+	let isGames = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'games');
+	let showSeriesLength = $derived(
+		selectedTypes.includes('series') && !isSongs && !isGames
+	);
 
 	let results = $state<Rec[]>([]);
 
 	let visibleGenres = $derived.by(() => {
 		if (isSongs) return GENRES_BY_FORMAT.songs;
+		if (isGames) return GENRES_BY_FORMAT.games;
 		if (!selectedTypes.length) return ALL_MEDIA_GENRES;
 		const set = new Set<string>();
 		for (const t of selectedTypes) {
@@ -187,6 +292,13 @@
 		notesWeight <= 35 ? 'Similar-to leads' : notesWeight <= 55 ? 'Balanced' : 'Notes lead'
 	);
 
+	/** Count of advanced-drawer filters that differ from defaults. */
+	let activeAdvancedCount = $derived(
+		(antiVibe.trim() ? 1 : 0) +
+			(selectedDecade ? 1 : 0) +
+			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0)
+	);
+
 	/** Actual API genres only — never parrot user picks */
 	function itemGenres(item: Rec): string[] {
 		return item.genres?.length ? item.genres : [];
@@ -204,8 +316,28 @@
 			if (item.seasonInfo) parts.push(item.seasonInfo);
 			return parts.join(' · ');
 		}
+		if (item.kind === 'game' || item.mediaType === 'Game') {
+			if (item.platforms?.length) parts.push(item.platforms.slice(0, 3).join(', '));
+			else if (item.mediaType) parts.push(item.mediaType);
+			if (item.seasonInfo) parts.push(item.seasonInfo);
+			// age rating shown as badge — skip here
+			if (item.rating != null) parts.push(`★ ${formatRating(item.rating)}`);
+			return parts.join(' · ');
+		}
 		if (item.mediaType) parts.push(item.mediaType);
 		if (item.seasonInfo) parts.push(item.seasonInfo);
+		const seasonInfoHasSeasons = /season/i.test(item.seasonInfo || '');
+		if (!seasonInfoHasSeasons) {
+			if (item.seasons_label) parts.push(item.seasons_label);
+			else if (item.number_of_seasons && item.number_of_seasons > 0) {
+				parts.push(
+					item.number_of_seasons === 1
+						? '1 Season'
+						: `${item.number_of_seasons} Seasons`
+				);
+			}
+		}
+		// age rating shown as badge — skip here
 		if (item.rating != null) parts.push(`★ ${formatRating(item.rating)}`);
 		return parts.join(' · ');
 	}
@@ -214,7 +346,9 @@
 		if (item.likeTitles?.length) return `like ${item.likeTitles.join(' · ')}`;
 		if (item.likeTitle) return `like ${item.likeTitle}`;
 		// fallback badge text when gemini forgot the refs lol
-		return item.kind === 'song' || item.mediaType === 'Song' ? 'song picks' : "tonight's pick";
+		if (item.kind === 'song' || item.mediaType === 'Song') return 'song picks';
+		if (item.kind === 'game' || item.mediaType === 'Game') return 'game picks';
+		return "tonight's pick";
 	}
 
 	function primaryListenUrl(item: Rec): string {
@@ -228,9 +362,36 @@
 		return `https://www.youtube.com/results?search_query=${q}`;
 	}
 
+	function gameStoreLinks(item: Rec): Array<{ platform: string; url: string; store?: string }> {
+		if (item.storeLinks?.length) return item.storeLinks;
+		const url = primaryGameUrl(item);
+		const label =
+			item.store_name ||
+			item.providers?.find((p) => p.url)?.name ||
+			'Store';
+		return url ? [{ platform: label, url, store: label }] : [];
+	}
+
+	function storeCtaLabel(link: { platform: string; store?: string }): string {
+		const name = link.platform || link.store || 'Store';
+		return `View on ${name}`;
+	}
+
+	function primaryGameUrl(item: Rec): string {
+		if (item.storeLinks?.[0]?.url) return item.storeLinks[0].url;
+		if (item.listen_url) return item.listen_url;
+		const withUrl = item.providers?.find((p) => p.url);
+		if (withUrl?.url) return withUrl.url;
+		return `https://www.igdb.com/search?type=1&q=${encodeURIComponent(item.title)}`;
+	}
+
 	// api sometimes sends kind, sometimes mediaType="Song" — either works
 	function isSongRec(item: Rec): boolean {
 		return item.kind === 'song' || item.mediaType === 'Song';
+	}
+
+	function isGameRec(item: Rec): boolean {
+		return item.kind === 'game' || item.mediaType === 'Game';
 	}
 
 	function previewKey(item: Rec, i: number) {
@@ -255,8 +416,13 @@
 	}
 
 	function normalizeRec(raw: Record<string, any> | null | undefined): Rec {
-		// song vs media — backend field names are a bit all over the place
-		const kind = raw?.kind === 'song' || raw?.mediaType === 'Song' ? 'song' : 'media';
+		// song vs game vs media — backend field names are a bit all over the place
+		const kind =
+			raw?.kind === 'song' || raw?.mediaType === 'Song'
+				? 'song'
+				: raw?.kind === 'game' || raw?.mediaType === 'Game'
+					? 'game'
+					: 'media';
 		return {
 			title: raw?.title || '???',
 			cover: raw?.cover || '',
@@ -280,8 +446,153 @@
 			// listen_url preferred; zflix_url was an older name, keep both just in case
 			listen_url: raw?.listen_url || raw?.zflix_url,
 			preview_url: raw?.preview_url || raw?.previewUrl || undefined,
-			trailer_youtube_key: raw?.trailer_youtube_key || raw?.trailerYoutubeKey || undefined
+			trailer_youtube_key: raw?.trailer_youtube_key || raw?.trailerYoutubeKey || undefined,
+			content_rating: raw?.content_rating || raw?.contentRating || undefined,
+			platforms: Array.isArray(raw?.platforms)
+				? raw.platforms.map((p: any) => String(p)).filter(Boolean)
+				: undefined,
+			price_range: raw?.price_range || raw?.priceRange || undefined,
+			priceLabel:
+				typeof raw?.priceLabel === 'string' && raw.priceLabel.trim()
+					? raw.priceLabel.trim()
+					: undefined,
+			store_name:
+				typeof raw?.store_name === 'string' && raw.store_name.trim()
+					? raw.store_name.trim()
+					: typeof raw?.storeName === 'string' && raw.storeName.trim()
+						? raw.storeName.trim()
+						: undefined,
+			storeLinks: Array.isArray(raw?.storeLinks)
+				? raw.storeLinks
+						.map((l: any) => ({
+							platform: String(l?.platform || l?.store || '').trim(),
+							url: String(l?.url || '').trim(),
+							store: l?.store ? String(l.store).trim() : undefined
+						}))
+						.filter((l: { platform: string; url: string }) => l.platform && l.url)
+				: undefined,
+			number_of_seasons:
+				typeof raw?.number_of_seasons === 'number'
+					? raw.number_of_seasons
+					: typeof raw?.numberOfSeasons === 'number'
+						? raw.numberOfSeasons
+						: undefined,
+			seasons_label:
+				typeof raw?.seasons_label === 'string' && raw.seasons_label.trim()
+					? raw.seasons_label.trim()
+					: typeof raw?.seasonsLabel === 'string' && raw.seasonsLabel.trim()
+						? raw.seasonsLabel.trim()
+						: undefined
 		};
+	}
+
+	function currentVibeState() {
+		return {
+			types: selectedTypes,
+			genres: selectedGenres,
+			vibe: vibePrompt,
+			antiVibe,
+			likes: likeTitles,
+			decade: selectedDecade,
+			maturity: selectedMaturity,
+			priceRange: selectedPriceRange,
+			platforms: selectedPlatforms,
+			seriesLength: selectedSeasonCount,
+			region: watchRegion,
+			notesWeight
+		};
+	}
+
+	function syncVibeUrl() {
+		if (typeof window === 'undefined') return;
+		const params = buildVibeSearchParams(currentVibeState());
+		const qs = params.toString();
+		const next = qs ? `${page.url.pathname}?${qs}` : page.url.pathname;
+		const cur = `${page.url.pathname}${page.url.search}`;
+		if (next === cur) return;
+		// Query-only sync — avoid goto/replaceState resolve lint; keep scroll/focus
+		history.replaceState(history.state, '', next);
+	}
+
+	function showShareToast(msg: string) {
+		shareToast = msg;
+		if (shareToastTimer) clearTimeout(shareToastTimer);
+		shareToastTimer = setTimeout(() => {
+			shareToast = '';
+			shareToastTimer = null;
+		}, 2200);
+	}
+
+	async function copyVibeLink() {
+		const url = vibeShareUrl(
+			typeof window !== 'undefined' ? window.location.origin : page.url.origin,
+			page.url.pathname,
+			currentVibeState()
+		);
+		try {
+			await navigator.clipboard.writeText(url);
+			showShareToast('Vibe link copied');
+			syncVibeUrl();
+		} catch {
+			try {
+				const ta = document.createElement('textarea');
+				ta.value = url;
+				ta.setAttribute('readonly', '');
+				ta.style.position = 'fixed';
+				ta.style.left = '-9999px';
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand('copy');
+				document.body.removeChild(ta);
+				showShareToast('Vibe link copied');
+				syncVibeUrl();
+			} catch {
+				showShareToast('Could not copy link');
+			}
+		}
+	}
+
+	function applyVibeFromUrl(params: URLSearchParams): boolean {
+		const parsed = parseVibeSearchParams(params);
+		if (!parsed) return false;
+
+		if (parsed.types?.length) {
+			selectedTypes = parsed.types.filter((t): t is FormatId =>
+				FORMAT_OPTIONS.some((f) => f.id === t)
+			) as FormatId[];
+		}
+		if (parsed.genres?.length) selectedGenres = parsed.genres;
+		if (parsed.vibe != null) vibePrompt = parsed.vibe;
+		if (parsed.antiVibe != null) antiVibe = parsed.antiVibe;
+		if (parsed.likes?.length) likeTitles = parsed.likes;
+		if (parsed.decade != null) {
+			selectedDecade = DECADE_OPTIONS.some((d) => d.id === parsed.decade)
+				? parsed.decade
+				: '';
+		}
+		if (parsed.maturity != null) {
+			const m = parsed.maturity;
+			selectedMaturity = MATURITY_OPTIONS.some((o) => o.id === m) ? m : '';
+		}
+		if (parsed.priceRange != null) {
+			const p = parsed.priceRange;
+			selectedPriceRange = PRICE_RANGE_OPTIONS.some((o) => o.id === p) ? p : '';
+		}
+		if (parsed.platforms?.length) selectedPlatforms = [...parsed.platforms];
+		if (parsed.seriesLength != null) {
+			const s = parsed.seriesLength;
+			selectedSeasonCount = SERIES_LENGTH_OPTIONS.some((o) => o.id === s) ? s : '';
+		}
+		if (parsed.region) watchRegion = normalizeRegion(parsed.region);
+		if (parsed.notesWeight != null) notesWeight = parsed.notesWeight;
+		return true;
+	}
+
+	function priceBadgeLabel(item: Rec): string | undefined {
+		if (item.priceLabel) return item.priceLabel;
+		const id = item.price_range;
+		if (!id) return undefined;
+		return PRICE_RANGE_BADGE[id] || id;
 	}
 
 	type ProviderGroup = { label: string; items: Provider[] };
@@ -333,6 +644,8 @@
 	}
 
 	onMount(() => {
+		auraList = loadAuraList();
+
 		try {
 			const saved = localStorage.getItem(REGION_KEY);
 			if (saved) {
@@ -354,11 +667,36 @@
 		}
 		applyThemeToDocument(uiTheme);
 
+		try {
+			document.getElementById('aw-boot')?.setAttribute('hidden', '');
+		} catch {
+			/* shrug */
+		}
+
+		// warm cold-start serverless / match engine — fire and forget
+		void fetch('/api/health').catch(() => {});
+
+		const hadVibeParams = applyVibeFromUrl(new URLSearchParams(window.location.search));
+		if (hadVibeParams && activeAdvancedCount > 0) {
+			showAdvanced = true;
+		}
+
 		clockLabel = formatClock();
 		const id = setInterval(() => {
 			clockLabel = formatClock();
 		}, 60_000);
-		return () => clearInterval(id);
+
+		if (hadVibeParams) {
+			// Shared vibe link — restore filters then auto-run
+			queueMicrotask(() => {
+				if (canSubmit) void findMyVibe();
+			});
+		}
+
+		return () => {
+			clearInterval(id);
+			if (shareToastTimer) clearTimeout(shareToastTimer);
+		};
 	});
 
 	$effect(() => {
@@ -380,21 +718,31 @@
 
 	function toggleFormat(id: FormatId) {
 		const wasSongs = selectedTypes.length === 1 && selectedTypes[0] === 'songs';
+		const wasGames = selectedTypes.length === 1 && selectedTypes[0] === 'games';
 		let next: FormatId[];
 		if (id === 'songs') next = ['songs'];
-		else if (wasSongs) next = [id];
+		else if (id === 'games') next = ['games'];
+		else if (wasSongs || wasGames) next = [id];
 		else if (selectedTypes.includes(id)) next = selectedTypes.filter((t) => t !== id);
 		else next = [...selectedTypes, id];
 
 		selectedTypes = next;
 		const nowSongs = next.length === 1 && next[0] === 'songs';
+		const nowGames = next.length === 1 && next[0] === 'games';
 		const allowed = nowSongs
 			? GENRES_BY_FORMAT.songs
-			: next.length
-				? [...new Set(next.flatMap((t) => GENRES_BY_FORMAT[t]))]
-				: ALL_MEDIA_GENRES;
+			: nowGames
+				? GENRES_BY_FORMAT.games
+				: next.length
+					? [...new Set(next.flatMap((t) => GENRES_BY_FORMAT[t]))]
+					: ALL_MEDIA_GENRES;
 		selectedGenres = selectedGenres.filter((g) => allowed.includes(g));
-		if (wasSongs !== nowSongs) likeTitles = [];
+		if (wasSongs !== nowSongs || wasGames !== nowGames) likeTitles = [];
+		if (wasGames && !nowGames) {
+			selectedPriceRange = '';
+			selectedPlatforms = [];
+		}
+		if (!next.includes('series')) selectedSeasonCount = '';
 	}
 
 	function toggleGenre(g: string) {
@@ -415,7 +763,6 @@
 		}
 
 		isLoading = true;
-		results = [];
 		playingPreview = null;
 
 		try {
@@ -426,10 +773,15 @@
 					types: selectedTypes,
 					genres: selectedGenres,
 					prompt: vibePrompt,
+					antiVibe: antiVibe || undefined,
 					likeTitles: likeTitles.length ? likeTitles : undefined,
 					notesWeight,
 					region: watchRegion,
-					decade: selectedDecade || undefined
+					decade: selectedDecade || undefined,
+					maturity: selectedMaturity || undefined,
+					priceRange: selectedPriceRange || undefined,
+					platforms: selectedPlatforms.length ? selectedPlatforms : undefined,
+					seriesLength: selectedSeasonCount || undefined
 				})
 			});
 
@@ -448,6 +800,7 @@
 						? [data.recommendation]
 						: [];
 			results = list.map((raw: Record<string, any>) => normalizeRec(raw));
+			syncVibeUrl();
 		} catch (err: any) {
 			console.log('oops', err);
 			errMsg = err?.message || 'something went sideways';
@@ -461,6 +814,44 @@
 		if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
 			findMyVibe();
 		}
+	}
+
+	async function surpriseMe() {
+		const roll = rollSurpriseMe(selectedTypes);
+		viewMode = 'match';
+		// Keep Format as-is — Surprise Me only randomizes vibe / light filters
+		vibePrompt = roll.vibe;
+		selectedGenres = roll.genres ? [...roll.genres] : [];
+		likeTitles = [];
+		selectedMaturity = roll.maturity || '';
+		selectedPriceRange = roll.priceRange || '';
+		selectedPlatforms = [];
+		selectedSeasonCount = roll.seriesLength || '';
+		selectedDecade = roll.decade || '';
+		await findMyVibe();
+	}
+
+	function toggleSave(item: Rec) {
+		const id = makeId(item.title, item.mediaType, item.artist);
+		const wasOn = isOnAuraList(auraList, id);
+		auraList = toggleAuraListItem(auraList, {
+			id,
+			title: item.title,
+			cover: item.cover || '',
+			year: item.seasonInfo || undefined,
+			mediaType: item.mediaType,
+			kind: item.kind || (item.mediaType === 'Song' ? 'song' : undefined),
+			artist: item.artist,
+			pitch: item.pitch
+		});
+		saveAuraList(auraList);
+		showShareToast(wasOn ? 'Removed from My List' : 'Saved to My List');
+	}
+
+	function removeAuraItem(id: string) {
+		auraList = auraList.filter((x) => x.id !== id);
+		saveAuraList(auraList);
+		showShareToast('Removed from My List');
 	}
 
 	function formatRating(n: number) {
@@ -481,7 +872,7 @@
 	<form class="vibe-form" onsubmit={findMyVibe}>
 		<div class="field">
 			<span class="field-label" id="format-label">Format</span>
-			<div class="segment" role="group" aria-labelledby="format-label">
+			<div class="segment format-segment" role="group" aria-labelledby="format-label">
 				{#each FORMAT_OPTIONS as opt (opt.id)}
 					<button
 						type="button"
@@ -517,26 +908,8 @@
 		</div>
 
 		<div class="field">
-			<span class="field-label" id="decade-label">Decade / Era</span>
-			<div class="segment decade-segment" role="group" aria-labelledby="decade-label">
-				{#each DECADE_OPTIONS as opt (opt.id || 'any')}
-					<button
-						type="button"
-						class="segment-btn"
-						class:active={selectedDecade === opt.id}
-						aria-pressed={selectedDecade === opt.id}
-						onclick={() => (selectedDecade = opt.id)}
-						disabled={isLoading}
-					>
-						{opt.label}
-					</button>
-				{/each}
-			</div>
-		</div>
-
-		<div class="field">
 			<label class="field-label" for="like-title">
-				{isSongs ? 'Like these' : 'Like these titles'}
+				{isGames ? 'Like these games' : isSongs ? 'Like these' : 'Like these titles'}
 				<span class="optional">(optional)</span>
 			</label>
 			<LikeTitleSelect
@@ -544,62 +917,116 @@
 				bind:values={likeTitles}
 				disabled={isLoading}
 				variant={uiTheme === 'desktop' ? 'desktop' : 'dark'}
-				kind={isSongs ? 'music' : 'media'}
+				kind={isGames ? 'games' : isSongs ? 'music' : 'media'}
 			/>
 			<p class="field-hint">
-				{isSongs
-					? 'Add songs or artists — find tracks in the same vibe'
-					: 'Add one or more — find something in the same vein'}
+				{isGames
+					? 'Add games — find titles in the same vibe'
+					: isSongs
+						? 'Add songs or artists — find tracks in the same vibe'
+						: 'Add one or more — find something in the same vein'}
 			</p>
 		</div>
 
 		<div class="field">
-			<label class="field-label" for="vibe"
-				>Notes <span class="optional">(optional)</span></label
-			>
-			<textarea
-				id="vibe"
-				class="vibe-input"
-				bind:value={vibePrompt}
-				onkeydown={onKeyDown}
-				placeholder={isSongs
-					? 'late night drive, soft vocals, no pop…'
-					: 'or type “like Charlotte, sad ending…” here'}
-				rows="3"
-				disabled={isLoading}
-			></textarea>
-		</div>
-
-		<div class="field weight-field">
-			<div class="weight-label-row">
-				<label class="field-label" for="notes-weight">Match priority</label>
-				<span class="weight-value">{notesWeightLabel} · {notesWeight}</span>
-			</div>
-			<div class="weight-slider-row">
-				<span class="weight-end" aria-hidden="true">Similar-to</span>
-				<input
-					id="notes-weight"
-					class="weight-slider"
-					type="range"
-					min="0"
-					max="100"
-					step="5"
-					value={notesWeight}
-					oninput={(e) => {
-						notesWeight = Number(e.currentTarget.value);
-					}}
-					disabled={isLoading}
-				/>
-				<span class="weight-end" aria-hidden="true">Notes</span>
+			<span class="field-label" id="maturity-label">Content rating</span>
+			<div class="segment maturity-segment" role="group" aria-labelledby="maturity-label">
+				{#each MATURITY_OPTIONS as opt (opt.id || 'any')}
+					{@const certs = isGames
+						? opt.gameCerts
+						: isSongs
+							? opt.songCerts
+							: opt.mediaCerts}
+					<button
+						type="button"
+						class="segment-btn maturity-btn"
+						class:active={selectedMaturity === opt.id}
+						aria-pressed={selectedMaturity === opt.id}
+						aria-label="{opt.label}, {certs}"
+						onclick={() => (selectedMaturity = opt.id)}
+						disabled={isLoading}
+					>
+						<span class="maturity-label">{opt.label}</span>
+						<span class="maturity-certs">{certs}</span>
+					</button>
+				{/each}
 			</div>
 			<p class="field-hint">
-				{likeTitles.length
-					? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
-					: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
+				{isGames
+					? 'Shown on picks as ESRB / PEGI badges.'
+					: isSongs
+						? 'Steers the model — songs have no formal certs.'
+						: 'Shown on picks as TMDB age badges (G, PG-13, R…).'}
 			</p>
 		</div>
 
-		{#if !isSongs}
+		{#if isGames}
+			<div class="field">
+				<label class="field-label" for="platforms"
+					>Platforms <span class="optional">(optional)</span></label
+				>
+				<PlatformSelect
+					id="platforms"
+					bind:values={selectedPlatforms}
+					disabled={isLoading}
+					variant={uiTheme === 'desktop' ? 'desktop' : 'dark'}
+				/>
+				<p class="field-hint">Only suggest games natively on these platforms.</p>
+			</div>
+			<div class="field">
+				<span class="field-label" id="price-range-label">Price range</span>
+				<div
+					class="segment price-segment"
+					role="group"
+					aria-labelledby="price-range-label"
+				>
+					{#each PRICE_RANGE_OPTIONS as opt (opt.id || 'any')}
+						<button
+							type="button"
+							class="segment-btn maturity-btn"
+							class:active={selectedPriceRange === opt.id}
+							aria-pressed={selectedPriceRange === opt.id}
+							aria-label="{opt.label}, {opt.hint}"
+							onclick={() => (selectedPriceRange = opt.id)}
+							disabled={isLoading}
+						>
+							<span class="maturity-label">{opt.label}</span>
+							<span class="maturity-certs">{opt.hint}</span>
+						</button>
+					{/each}
+				</div>
+				<p class="field-hint">Steers game picks by typical store price tier.</p>
+			</div>
+		{/if}
+
+		{#if showSeriesLength}
+			<div class="field">
+				<span class="field-label" id="series-length-label">Series length</span>
+				<div
+					class="segment price-segment series-length-segment"
+					role="group"
+					aria-labelledby="series-length-label"
+				>
+					{#each SERIES_LENGTH_OPTIONS as opt (opt.id || 'any')}
+						<button
+							type="button"
+							class="segment-btn maturity-btn"
+							class:active={selectedSeasonCount === opt.id}
+							aria-pressed={selectedSeasonCount === opt.id}
+							aria-label="{opt.label}, {opt.hint}"
+							onclick={() => (selectedSeasonCount = opt.id)}
+							disabled={isLoading}
+						>
+							<span class="maturity-label">{opt.label}</span>
+							<span class="maturity-certs">{opt.hint}</span>
+						</button>
+					{/each}
+				</div>
+				<p class="field-hint">How many seasons — miniseries through long binge.</p>
+			</div>
+		{/if}
+
+		{#if !isSongs && !isGames}
 			<div class="field region-field">
 				<label class="field-label" for="region">Streaming region</label>
 				<RegionSelect
@@ -613,16 +1040,131 @@
 			</div>
 		{/if}
 
-		<button class="cta" type="submit" disabled={isLoading || !canSubmit}>
-			{#if isLoading}
-				<span class="spinner" aria-hidden="true"></span>
-				{uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
-			{:else if isSongs}
-				{uiTheme === 'minimal' ? 'Get song picks' : 'get song picks'}
-			{:else}
-				{uiTheme === 'minimal' ? 'Get picks' : 'get picks'}
+		<div class="field">
+			<label class="field-label" for="vibe"
+				>Notes <span class="optional">(optional)</span></label
+			>
+			<textarea
+				id="vibe"
+				class="vibe-input"
+				bind:value={vibePrompt}
+				onkeydown={onKeyDown}
+				placeholder={isGames
+					? 'competitive tactical shooter, cozy farming, deep crafting…'
+					: isSongs
+						? 'late night drive, soft vocals, no pop…'
+						: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
+				rows="3"
+				disabled={isLoading}
+			></textarea>
+		</div>
+
+		<button
+			type="button"
+			class="advanced-toggle"
+			aria-expanded={showAdvanced}
+			onclick={() => (showAdvanced = !showAdvanced)}
+		>
+			<span class="advanced-toggle-label">
+				{showAdvanced ? 'Hide advanced' : 'Advanced Filters'}
+			</span>
+			{#if activeAdvancedCount > 0}
+				<span class="advanced-toggle-badge" title="{activeAdvancedCount} active"
+					>{activeAdvancedCount}</span
+				>
 			{/if}
+			<span class="advanced-toggle-chevron" aria-hidden="true"
+				>{showAdvanced ? '▲' : '▼'}</span
+			>
 		</button>
+
+		{#if showAdvanced}
+			<div class="advanced-fields" transition:slide={{ duration: 200 }}>
+				<div class="field">
+					<label class="field-label" for="anti-vibe"
+						>Exclude / Anti-vibe <span class="optional">(optional)</span></label
+					>
+					<textarea
+						id="anti-vibe"
+						class="vibe-input anti-vibe-input"
+						bind:value={antiVibe}
+						placeholder="horror, romance, jump scares…"
+						rows="2"
+						disabled={isLoading}
+					></textarea>
+				</div>
+
+				<div class="field">
+					<span class="field-label" id="decade-label">Decade / Era</span>
+					<div class="segment decade-segment" role="group" aria-labelledby="decade-label">
+						{#each DECADE_OPTIONS as opt (opt.id || 'any')}
+							<button
+								type="button"
+								class="segment-btn"
+								class:active={selectedDecade === opt.id}
+								aria-pressed={selectedDecade === opt.id}
+								onclick={() => (selectedDecade = opt.id)}
+								disabled={isLoading}
+							>
+								{opt.label}
+							</button>
+						{/each}
+					</div>
+				</div>
+
+				<div class="field weight-field">
+					<div class="weight-label-row">
+						<label class="field-label" for="notes-weight">Match priority</label>
+						<span class="weight-value">{notesWeightLabel} · {notesWeight}</span>
+					</div>
+					<div class="weight-slider-row">
+						<span class="weight-end" aria-hidden="true">Similar-to</span>
+						<input
+							id="notes-weight"
+							class="weight-slider"
+							type="range"
+							min="0"
+							max="100"
+							step="5"
+							value={notesWeight}
+							oninput={(e) => {
+								notesWeight = Number(e.currentTarget.value);
+							}}
+							disabled={isLoading}
+						/>
+						<span class="weight-end" aria-hidden="true">Notes</span>
+					</div>
+					<p class="field-hint">
+						{likeTitles.length
+							? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
+							: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
+					</p>
+				</div>
+			</div>
+		{/if}
+
+		<div class="cta-row">
+			<button class="cta" type="submit" disabled={isLoading || !canSubmit}>
+				{#if isLoading}
+					<span class="spinner" aria-hidden="true"></span>
+					{uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
+				{:else if isSongs}
+					{uiTheme === 'minimal' ? 'Get song picks' : 'get song picks'}
+				{:else if isGames}
+					{uiTheme === 'minimal' ? 'Get game picks' : 'get game picks'}
+				{:else}
+					{uiTheme === 'minimal' ? 'Get picks' : 'get picks'}
+				{/if}
+			</button>
+			<button
+				type="button"
+				class="cta cta-surprise"
+				disabled={isLoading}
+				onclick={() => void surpriseMe()}
+			>
+				{uiTheme === 'minimal' ? 'Surprise me' : 'surprise me'}
+			</button>
+		</div>
 	</form>
 
 	{#if errMsg}
@@ -631,24 +1173,104 @@
 {/snippet}
 
 {#snippet resultContent()}
-	{#if isLoading}
+	{#if viewMode === 'list'}
+		{#if auraList.length}
+			<div class="aura-list" in:fly={{ y: 8, duration: 280, easing: quintOut }} out:fade={{ duration: 140 }}>
+				<p class="rec-list-header">{auraList.length} saved</p>
+				{#each auraList as saved (saved.id)}
+					<article class="aura-list-card">
+						<div class="aura-list-cover">
+							{#if saved.cover}
+								<img src={saved.cover} alt="" class="cover" loading="lazy" decoding="async" />
+							{:else}
+								<div
+									class="cover-fallback"
+									style={coverFallbackStyle(saved.artist ? `${saved.artist} ${saved.title}` : saved.title)}
+									aria-hidden="true"
+								>
+									<span class="cover-fallback-initials">
+										{mediaInitials(saved.title, saved.artist)}
+									</span>
+								</div>
+							{/if}
+						</div>
+						<div class="aura-list-meta">
+							<h2 class="rec-title">{saved.title}</h2>
+							{#if saved.year}
+								<p class="meta-line">{saved.year}</p>
+							{/if}
+							<button
+								type="button"
+								class="aura-list-remove"
+								onclick={() => removeAuraItem(saved.id)}
+							>
+								Remove
+							</button>
+						</div>
+					</article>
+				{/each}
+			</div>
+		{:else}
+			<p class="empty-state" transition:fade={{ duration: 220 }}>
+				Nothing saved yet — tap ★ on a pick.
+			</p>
+		{/if}
+	{:else if isLoading && !results.length}
 		<div class="loading-block" transition:fade={{ duration: 250 }}>
 			<DesktopLoading
-				hint={uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
+				hint={uiTheme === 'minimal' ? 'Waking match engine…' : 'waking match engine…'}
 				variant={uiTheme}
 			/>
 		</div>
+		<div class="rec-list" aria-hidden="true">
+			{#each [0, 1, 2] as i (i)}
+				<div class="rec-card rec-skeleton">
+					<div class="rec-grid">
+						<div class="skel-cover"></div>
+						<div class="skel-copy">
+							<div class="skel-line skel-line-sm"></div>
+							<div class="skel-line skel-line-lg"></div>
+							<div class="skel-line skel-line-md"></div>
+							<div class="skel-line"></div>
+						</div>
+					</div>
+				</div>
+			{/each}
+		</div>
 	{:else if results.length}
+		{#if isLoading}
+			<div class="loading-block loading-refresh" transition:fade={{ duration: 200 }}>
+				<DesktopLoading
+					hint={uiTheme === 'minimal' ? 'Refreshing picks…' : 'refreshing picks…'}
+					variant={uiTheme}
+				/>
+			</div>
+		{/if}
 		<div
 			class="rec-list"
+			class:rec-list-dimmed={isLoading}
 			in:fly={{ y: uiTheme === 'desktop' ? 0 : 10, duration: uiTheme === 'desktop' ? 0 : 320, easing: quintOut }}
 			out:fade={{ duration: 140 }}
 		>
-			<p class="rec-list-header">{results.length} picks</p>
+			<div class="rec-list-toolbar">
+				<p class="rec-list-header">{results.length} picks</p>
+				<button
+					type="button"
+					class="share-vibe-btn"
+					onclick={() => void copyVibeLink()}
+					disabled={isLoading}
+				>
+					Copy link
+				</button>
+			</div>
 			{#each results as item, i (item.title + String(i))}
 				{@const genres = itemGenres(item)}
 				{@const meta = itemMetaLine(item)}
 				{@const song = isSongRec(item)}
+				{@const game = isGameRec(item)}
+				{@const priceBadge = game ? priceBadgeLabel(item) : undefined}
+				{@const saveId = makeId(item.title, item.mediaType, item.artist)}
+				{@const saved = isOnAuraList(auraList, saveId)}
 				<article
 					class="rec-card"
 					{@attach uiTheme === 'desktop' && desktopCardEntrance(i)}
@@ -685,7 +1307,25 @@
 
 						<div class="rec-copy">
 							<p class="rec-label">{likeLabel(item)}</p>
-							<h2 class="rec-title">{item.title}</h2>
+							<div class="rec-title-row">
+								<h2 class="rec-title">{item.title}</h2>
+								{#if item.content_rating && !song}
+									<span class="age-badge" title="Content rating">{item.content_rating}</span>
+								{/if}
+								{#if priceBadge}
+									<span class="age-badge price-badge" title="Price range">{priceBadge}</span>
+								{/if}
+								<button
+									type="button"
+									class="save-btn"
+									class:saved
+									aria-label="Save to My List"
+									aria-pressed={saved}
+									onclick={() => toggleSave(item)}
+								>
+									{saved ? '★' : '☆'}
+								</button>
+							</div>
 							{#if song && item.artist}
 								<p class="rec-artist">{item.artist}</p>
 							{/if}
@@ -709,7 +1349,7 @@
 									preload="none"
 									src={item.preview_url}
 								></audio>
-							{:else if !song && item.trailer_youtube_key}
+							{:else if !song && !game && item.trailer_youtube_key}
 								{#if playingPreview === previewKey(item, i)}
 									<div class="trailer-wrap">
 										<iframe
@@ -738,28 +1378,58 @@
 								{/if}
 							{/if}
 
-							<div class="where-watch">
-								<div class="watch-heading">
-									{#if item.watchLink && !song}
-										<a
-											class="watch-label watch-label-link"
-											href={item.watchLink}
-											target="_blank"
-											rel="external noopener noreferrer"
-										>
-											Where to Watch
-										</a>
-									{:else}
-										<span class="watch-label">{song ? 'Listen' : 'Where to Watch'}</span>
-									{/if}
-									{#if item.region && !song}
-										<span class="watch-region">{item.region}</span>
-									{/if}
-								</div>
-								{#if item.providers?.length}
+							{#if game}
+								{@const platforms = item.platforms?.filter(Boolean) ?? []}
+								{@const links = gameStoreLinks(item)}
+								{#if platforms.length || links.length}
+									<div class="where-watch">
+										<div class="watch-heading">
+											<span class="watch-label">Playable on</span>
+										</div>
+										{#if platforms.length}
+											<p class="game-platform-line">{platforms.join(', ')}</p>
+										{/if}
+										{#if platforms.length && links.length}
+											<div class="game-store-sep" aria-hidden="true"></div>
+										{/if}
+										{#if links.length}
+											<div class="game-cta-row flex flex-wrap gap-2">
+												{#each links as link (link.url + link.platform)}
+													<a
+														class="zflix-cta"
+														href={link.url}
+														target="_blank"
+														rel="external noopener noreferrer"
+													>
+														{storeCtaLabel(link)}
+													</a>
+												{/each}
+											</div>
+										{/if}
+									</div>
+								{/if}
+							{:else}
+								<div class="where-watch">
+									<div class="watch-heading">
+										{#if item.watchLink && !song}
+											<a
+												class="watch-label watch-label-link"
+												href={item.watchLink}
+												target="_blank"
+												rel="external noopener noreferrer"
+											>
+												Where to Watch
+											</a>
+										{:else}
+											<span class="watch-label">{song ? 'Listen' : 'Where to Watch'}</span>
+										{/if}
+										{#if item.region && !song}
+											<span class="watch-region">{item.region}</span>
+										{/if}
+									</div>
 									{#if song}
 										<div class="provider-row provider-row-text">
-											{#each item.providers as p, pi (p.name + String(pi))}
+											{#each item.providers || [] as p, pi (p.name + String(pi))}
 												{#if p.url}
 													<a
 														class="provider-btn provider-text"
@@ -782,7 +1452,7 @@
 												{/if}
 											{/each}
 										</div>
-									{:else}
+									{:else if item.providers?.length}
 										<div class="provider-groups">
 											{#each providerGroups(item.providers) as group (group.label)}
 												<div class="provider-group">
@@ -825,27 +1495,27 @@
 											{/each}
 										</div>
 									{/if}
-								{/if}
-								{#if song}
-									<a
-										class="zflix-cta"
-										href={primaryListenUrl(item)}
-										target="_blank"
-										rel="external noopener noreferrer"
-									>
-										Open listen link
-									</a>
-								{:else if item.mediaType !== 'YouTube'}
-									<a
-										class="zflix-cta"
-										href={getZflixUrl(item.title)}
-										target="_blank"
-										rel="external noopener noreferrer"
-									>
-										Watch on Zflix
-									</a>
-								{/if}
-							</div>
+									{#if song}
+										<a
+											class="zflix-cta"
+											href={primaryListenUrl(item)}
+											target="_blank"
+											rel="external noopener noreferrer"
+										>
+											Open listen link
+										</a>
+									{:else if item.mediaType !== 'YouTube'}
+										<a
+											class="zflix-cta"
+											href={getZflixUrl(item.title)}
+											target="_blank"
+											rel="external noopener noreferrer"
+										>
+											Watch on Zflix
+										</a>
+									{/if}
+								</div>
+							{/if}
 						</div>
 					</div>
 				</article>
@@ -856,6 +1526,29 @@
 			{uiTheme === 'minimal' ? 'Nothing queued yet' : 'Your match appears here'}
 		</p>
 	{/if}
+{/snippet}
+
+{#snippet viewTabs()}
+	<div class="view-tabs" role="group" aria-label="Results view">
+		<button
+			type="button"
+			class="view-tab-btn"
+			class:active={viewMode === 'match'}
+			aria-pressed={viewMode === 'match'}
+			onclick={() => (viewMode = 'match')}
+		>
+			Match
+		</button>
+		<button
+			type="button"
+			class="view-tab-btn"
+			class:active={viewMode === 'list'}
+			aria-pressed={viewMode === 'list'}
+			onclick={() => (viewMode = 'list')}
+		>
+			My List ({auraList.length})
+		</button>
+	</div>
 {/snippet}
 
 {#snippet themeSwitcher()}
@@ -885,11 +1578,14 @@
 	<main class="minimal">
 		<header class="min-top">
 			<h1 class="min-brand">AuraWatch</h1>
-			{@render themeSwitcher()}
+			<div class="header-controls">
+				{@render viewTabs()}
+				{@render themeSwitcher()}
+			</div>
 		</header>
 
 		<p class="min-headline">
-			Can’t find what to watch? Get one movie, show, anime, or song that fits your vibe.
+			Can’t find what to watch? Get one movie, show, anime, song, or game that fits your vibe.
 		</p>
 
 		<div class="min-workspace">
@@ -913,6 +1609,7 @@
 				<span class="menu-brand">AuraWatch</span>
 			</div>
 			<div class="menubar-right">
+				{@render viewTabs()}
 				{@render themeSwitcher()}
 				<time class="menu-clock" datetime={clockLabel || undefined}>{clockLabel || '—'}</time>
 			</div>
@@ -934,8 +1631,8 @@
 					<h1 class="brand">AuraWatch</h1>
 					<p class="subhead">can’t find what to watch?</p>
 					<p class="lede">
-						Pick a format and genres. We’ll hand you one movie, TV show, anime, or song that
-						fits — so you stop scrolling and start watching.
+						Pick a format and genres. We’ll hand you a movie, show, anime, song, or game that
+						fits — so you stop scrolling and start watching or playing.
 					</p>
 
 					{@render formFields()}
@@ -954,8 +1651,8 @@
 						<span class="dot yellow"></span>
 						<span class="dot green"></span>
 					</div>
-					<span class="titlebar-text">Match</span>
-					<span class="titlebar-tag">PICK</span>
+					<span class="titlebar-text">{viewMode === 'list' ? 'My List' : 'Match'}</span>
+					<span class="titlebar-tag">{viewMode === 'list' ? 'LIST' : 'PICK'}</span>
 				</div>
 				<div class="window-body result-body">
 					{@render resultContent()}
@@ -968,6 +1665,12 @@
 			<span class="taskbar-tag">can’t find what to watch?</span>
 		</footer>
 	</main>
+{/if}
+
+{#if shareToast}
+	<div class="share-toast" role="status" aria-live="polite" transition:fade={{ duration: 160 }}>
+		{shareToast}
+	</div>
 {/if}
 
 <!-- Crawlable copy for search engines (kept out of the hero composition) -->
@@ -984,10 +1687,11 @@
 		optionally a show or movie you already love. AuraWatch scores picks against that vibe instead
 		of dumping endless rows.
 	</p>
-	<h3>Movie, TV, anime, and song picks</h3>
+	<h3>Movie, TV, anime, song, and game picks</h3>
 	<p>
-		Use Movies, TV Series, Anime, or Songs mode. Song mode includes listen links for Apple Music,
-		Spotify, and YouTube when available.
+		Use Movies, TV Series, Anime, Songs, or Games mode. Song mode includes listen links for Apple
+		Music, Spotify, and YouTube when available. Games mode pulls covers, platforms, and store links
+		from IGDB.
 	</p>
 </section>
 
@@ -1000,7 +1704,54 @@
 		color: #f3f4f6;
 	}
 
-	/* Shared theme segmented control */
+	.header-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	/* Shared view tabs + theme segmented control */
+	.view-tabs {
+		display: inline-grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0;
+		border-radius: 8px;
+		overflow: hidden;
+		flex-shrink: 0;
+		border: 1px solid rgba(255, 255, 255, 0.14);
+		background: rgba(255, 255, 255, 0.04);
+	}
+
+	.view-tab-btn {
+		appearance: none;
+		border: none;
+		cursor: pointer;
+		padding: 0.4rem 0.65rem;
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 500;
+		letter-spacing: 0.01em;
+		color: #9ca3af;
+		background: transparent;
+		white-space: nowrap;
+	}
+	.view-tab-btn:hover:not(.active) {
+		color: #f3f4f6;
+		background: rgba(255, 255, 255, 0.06);
+	}
+	.view-tab-btn.active {
+		color: #0e0e12;
+		background: #f3f4f6;
+		font-weight: 600;
+	}
+	.view-tab-btn:focus-visible {
+		outline: 2px solid #8b7cf7;
+		outline-offset: -2px;
+		z-index: 1;
+	}
+
 	.theme-segment {
 		display: inline-grid;
 		grid-template-columns: 1fr 1fr;
@@ -1059,25 +1810,30 @@
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
 	}
 
+	.desktop .view-tabs,
 	.desktop .theme-segment {
 		border: 2px solid var(--line);
 		border-radius: 0;
 		background: var(--window);
 	}
+	.desktop .view-tab-btn,
 	.desktop .theme-seg-btn {
 		padding: 0.15rem 0.55rem;
 		font-size: 0.72rem;
 		color: var(--muted);
 	}
+	.desktop .view-tab-btn:hover:not(.active),
 	.desktop .theme-seg-btn:hover:not(.active) {
 		color: var(--ink);
 		background: #f5f5f5;
 	}
+	.desktop .view-tab-btn.active,
 	.desktop .theme-seg-btn.active {
 		color: #fff;
 		background: #111;
 		font-weight: 700;
 	}
+	.desktop .view-tab-btn:focus-visible,
 	.desktop .theme-seg-btn:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: -2px;
@@ -1302,6 +2058,61 @@
 		color: var(--muted);
 	}
 
+	.desktop .advanced-toggle {
+		appearance: none;
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		width: 100%;
+		padding: 0.55rem 0.7rem;
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--muted);
+		background: transparent;
+		border: 2px solid var(--line);
+		border-radius: 0;
+		cursor: pointer;
+		text-align: left;
+	}
+	.desktop .advanced-toggle:hover {
+		color: var(--text);
+		border-color: color-mix(in srgb, var(--muted) 70%, var(--line));
+		background: color-mix(in srgb, var(--window) 92%, var(--muted));
+	}
+	.desktop .advanced-toggle:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+	.desktop .advanced-toggle-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.15rem;
+		height: 1.15rem;
+		padding: 0 0.28rem;
+		font-size: 0.62rem;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: 0;
+		text-transform: none;
+		color: #fff;
+		background: var(--accent);
+		border-radius: 0;
+	}
+	.desktop .advanced-toggle-chevron {
+		margin-left: auto;
+		font-size: 0.58rem;
+		opacity: 0.75;
+	}
+	.desktop .advanced-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 1.05rem;
+	}
+
 	.desktop .weight-label-row {
 		display: flex;
 		align-items: baseline;
@@ -1388,15 +2199,107 @@
 		cursor: not-allowed;
 	}
 
-	@media (max-width: 560px) {
-		.desktop .segment {
-			grid-template-columns: repeat(2, 1fr);
+	/* 5 formats — one even row (no orphan Games cell) */
+	.desktop .format-segment {
+		grid-template-columns: repeat(5, 1fr);
+	}
+	.desktop .format-segment .segment-btn {
+		border-right: 2px solid var(--line);
+		font-size: 0.62rem;
+		padding: 0.55rem 0.1rem;
+	}
+	.desktop .format-segment .segment-btn:nth-child(5n) {
+		border-right: none;
+	}
+	.desktop .format-segment .segment-btn:last-child {
+		border-right: none;
+	}
+
+	.desktop .maturity-segment {
+		grid-template-columns: repeat(4, 1fr);
+	}
+	.desktop .maturity-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.15rem;
+		padding: 0.45rem 0.15rem 0.5rem;
+		line-height: 1.15;
+	}
+	.desktop .maturity-label {
+		font-size: 0.68rem;
+		font-weight: inherit;
+	}
+	.desktop .maturity-certs {
+		font-size: 0.58rem;
+		font-weight: 500;
+		letter-spacing: 0.02em;
+		opacity: 0.72;
+		white-space: nowrap;
+	}
+	.desktop .maturity-btn.active .maturity-certs {
+		opacity: 0.95;
+	}
+
+	.desktop .price-segment {
+		grid-template-columns: repeat(5, 1fr);
+	}
+
+	@media (max-width: 640px) {
+		.desktop .format-segment {
+			grid-template-columns: repeat(3, 1fr);
 		}
-		.desktop .segment-btn:nth-child(2n) {
+		.desktop .format-segment .segment-btn {
+			border-right: 2px solid var(--line);
+			border-bottom: 2px solid var(--line);
+			font-size: 0.68rem;
+		}
+		.desktop .format-segment .segment-btn:nth-child(3n) {
 			border-right: none;
 		}
-		.desktop .segment-btn:nth-child(-n + 2) {
+		.desktop .format-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
+		}
+		.desktop .format-segment .segment-btn:last-child {
+			border-right: none;
+		}
+	}
+
+	@media (max-width: 560px) {
+		.desktop
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			) {
+			grid-template-columns: repeat(2, 1fr);
+		}
+		.desktop
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			)
+			.segment-btn:nth-child(2n) {
+			border-right: none;
+		}
+		.desktop
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			)
+			.segment-btn:nth-child(-n + 2) {
 			border-bottom: 2px solid var(--line);
+		}
+
+		.desktop .price-segment {
+			grid-template-columns: repeat(3, 1fr);
+		}
+		.desktop .price-segment .segment-btn {
+			border-right: 2px solid var(--line);
+			border-bottom: 2px solid var(--line);
+		}
+		.desktop .price-segment .segment-btn:nth-child(3n) {
+			border-right: none;
+		}
+		.desktop .price-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
 		}
 	}
 
@@ -1417,6 +2320,31 @@
 		.desktop .decade-segment .segment-btn:nth-child(n + 4) {
 			border-bottom: none;
 		}
+	}
+
+	.desktop .rec-title-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.45rem 0.55rem;
+		margin: 0 0 0.45rem;
+	}
+	.desktop .rec-title-row .rec-title {
+		margin: 0;
+	}
+	.desktop .age-badge {
+		display: inline-flex;
+		align-items: center;
+		flex-shrink: 0;
+		padding: 0.12rem 0.4rem;
+		border: 2px solid var(--line);
+		background: var(--window);
+		color: var(--ink);
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		line-height: 1.2;
+		text-transform: uppercase;
 	}
 
 	.desktop .media-preview.audio-preview {
@@ -1558,6 +2486,13 @@
 		opacity: 0.55;
 	}
 
+	.desktop .cta-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin-top: 0.2rem;
+		align-items: stretch;
+	}
 	.desktop .cta {
 		appearance: none;
 		border: 2px solid var(--accent);
@@ -1575,7 +2510,9 @@
 		align-items: center;
 		justify-content: center;
 		gap: 0.5rem;
-		margin-top: 0.2rem;
+		margin-top: 0;
+		flex: 1 1 auto;
+		min-width: 8rem;
 	}
 	.desktop .cta:hover:not(:disabled) {
 		filter: brightness(1.05);
@@ -1583,6 +2520,96 @@
 	.desktop .cta:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+	.desktop .cta-surprise {
+		flex: 0 1 auto;
+		color: var(--ink);
+		background: var(--window);
+		border-color: var(--line);
+	}
+	.desktop .cta-surprise:hover:not(:disabled) {
+		filter: none;
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.desktop .save-btn {
+		appearance: none;
+		margin-left: auto;
+		border: 2px solid var(--line);
+		background: var(--window);
+		color: var(--ink);
+		cursor: pointer;
+		padding: 0.05rem 0.4rem;
+		font: inherit;
+		font-size: 0.95rem;
+		line-height: 1.2;
+		flex-shrink: 0;
+	}
+	.desktop .save-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.desktop .save-btn.saved {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.desktop .aura-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		width: 100%;
+	}
+	.desktop .aura-list-card {
+		display: grid;
+		grid-template-columns: 4.5rem 1fr;
+		gap: 0.75rem;
+		align-items: start;
+		padding: 0.65rem;
+		border: 2px solid var(--line);
+		background: var(--window);
+	}
+	.desktop .aura-list-cover {
+		width: 4.5rem;
+		aspect-ratio: 2 / 3;
+		overflow: hidden;
+		border: 2px solid var(--line);
+		background: #eee;
+	}
+	.desktop .aura-list-cover .cover,
+	.desktop .aura-list-cover .cover-fallback {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	.desktop .aura-list-meta {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.desktop .aura-list-meta .rec-title {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+	.desktop .aura-list-remove {
+		appearance: none;
+		align-self: flex-start;
+		margin-top: 0.25rem;
+		border: 2px solid var(--line);
+		background: transparent;
+		cursor: pointer;
+		padding: 0.25rem 0.5rem;
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.desktop .aura-list-remove:hover {
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 
 	.desktop .spinner {
@@ -1630,13 +2657,42 @@
 		gap: 0;
 	}
 
-	.desktop .rec-list-header {
+	.desktop .rec-list-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
 		margin: 0 0 0.35rem;
+	}
+
+	.desktop .rec-list-header {
+		margin: 0;
 		font-size: 0.65rem;
 		font-weight: 700;
 		text-transform: uppercase;
 		letter-spacing: 0.1em;
 		color: var(--muted);
+	}
+
+	.desktop .share-vibe-btn {
+		flex-shrink: 0;
+		padding: 0.28rem 0.55rem;
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--ink);
+		background: var(--panel, #fff);
+		border: 1.5px solid var(--line);
+		cursor: pointer;
+	}
+	.desktop .share-vibe-btn:hover:not(:disabled) {
+		border-color: var(--accent, #e85d04);
+		color: var(--accent, #e85d04);
+	}
+	.desktop .share-vibe-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.desktop .rec-card {
@@ -1657,6 +2713,63 @@
 		width: 100%;
 		display: flex;
 		justify-content: flex-start;
+	}
+
+	.desktop .loading-refresh {
+		margin-bottom: 0.65rem;
+		padding-bottom: 0.55rem;
+		border-bottom: 2px solid var(--line);
+	}
+
+	.desktop .rec-list-dimmed {
+		opacity: 0.55;
+		pointer-events: none;
+	}
+
+	.desktop .rec-skeleton {
+		pointer-events: none;
+	}
+
+	.desktop .skel-cover {
+		width: 120px;
+		aspect-ratio: 2 / 3;
+		border: 2px solid var(--line);
+		background: #e8eaed;
+		animation: skel-pulse 1.2s ease-in-out infinite;
+	}
+
+	@media (min-width: 960px) {
+		.desktop .skel-cover {
+			width: 150px;
+		}
+	}
+
+	.desktop .skel-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		padding-top: 0.15rem;
+	}
+
+	.desktop .skel-line {
+		height: 0.7rem;
+		width: 88%;
+		background: #e8eaed;
+		animation: skel-pulse 1.2s ease-in-out infinite;
+	}
+
+	.desktop .skel-line-sm {
+		width: 28%;
+		height: 0.55rem;
+	}
+
+	.desktop .skel-line-lg {
+		width: 62%;
+		height: 1.05rem;
+	}
+
+	.desktop .skel-line-md {
+		width: 44%;
 	}
 
 	.desktop .rec-grid {
@@ -1888,6 +3001,23 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+	.desktop .game-platform-line {
+		margin: 0;
+		font-size: 0.75rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+	.desktop .game-store-sep {
+		width: 100%;
+		margin: 0.1rem 0;
+		border-top: 1px solid var(--line);
+	}
+	.desktop .game-cta-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+	}
 
 	.desktop .taskbar {
 		display: flex;
@@ -2055,13 +3185,42 @@
 		gap: 0;
 	}
 
-	.minimal .rec-list-header {
+	.minimal .rec-list-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
 		margin: 0 0 0.4rem;
+	}
+
+	.minimal .rec-list-header {
+		margin: 0;
 		font-size: 0.7rem;
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--muted);
+	}
+
+	.minimal .share-vibe-btn {
+		flex-shrink: 0;
+		padding: 0.3rem 0.6rem;
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text, #eee);
+		background: transparent;
+		border: 1px solid var(--line);
+		cursor: pointer;
+	}
+	.minimal .share-vibe-btn:hover:not(:disabled) {
+		border-color: var(--accent, #e85d04);
+		color: var(--accent, #e85d04);
+	}
+	.minimal .share-vibe-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.minimal .rec-card {
@@ -2102,6 +3261,61 @@
 		margin: 0;
 		font-size: 0.75rem;
 		color: var(--muted);
+	}
+
+	.minimal .advanced-toggle {
+		appearance: none;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.65rem 0.85rem;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--muted);
+		background: transparent;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		cursor: pointer;
+		text-align: left;
+	}
+	.minimal .advanced-toggle:hover {
+		color: var(--text);
+		border-color: rgba(160, 140, 240, 0.45);
+		background: rgba(255, 255, 255, 0.03);
+	}
+	.minimal .advanced-toggle:focus-visible {
+		outline: 2px solid rgba(160, 140, 240, 0.7);
+		outline-offset: 2px;
+	}
+	.minimal .advanced-toggle-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.2rem;
+		height: 1.2rem;
+		padding: 0 0.3rem;
+		font-size: 0.65rem;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: 0;
+		text-transform: none;
+		color: #0e0e12;
+		background: var(--accent);
+		border-radius: 999px;
+	}
+	.minimal .advanced-toggle-chevron {
+		margin-left: auto;
+		font-size: 0.62rem;
+		opacity: 0.7;
+	}
+	.minimal .advanced-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 1.35rem;
 	}
 
 	.minimal .weight-label-row {
@@ -2191,15 +3405,106 @@
 		cursor: not-allowed;
 	}
 
-	@media (max-width: 560px) {
-		.minimal .segment {
-			grid-template-columns: repeat(2, 1fr);
+	.minimal .format-segment {
+		grid-template-columns: repeat(5, 1fr);
+	}
+	.minimal .format-segment .segment-btn {
+		border-right: 1px solid var(--line);
+		font-size: 0.68rem;
+		padding: 0.55rem 0.1rem;
+	}
+	.minimal .format-segment .segment-btn:nth-child(5n) {
+		border-right: none;
+	}
+	.minimal .format-segment .segment-btn:last-child {
+		border-right: none;
+	}
+
+	.minimal .maturity-segment {
+		grid-template-columns: repeat(4, 1fr);
+	}
+	.minimal .maturity-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.12rem;
+		padding: 0.48rem 0.12rem 0.52rem;
+		line-height: 1.15;
+	}
+	.minimal .maturity-label {
+		font-size: 0.72rem;
+		font-weight: inherit;
+	}
+	.minimal .maturity-certs {
+		font-size: 0.6rem;
+		font-weight: 500;
+		letter-spacing: 0.02em;
+		opacity: 0.65;
+		white-space: nowrap;
+	}
+	.minimal .maturity-btn.active .maturity-certs {
+		opacity: 0.9;
+	}
+
+	.minimal .price-segment {
+		grid-template-columns: repeat(5, 1fr);
+	}
+
+	@media (max-width: 640px) {
+		.minimal .format-segment {
+			grid-template-columns: repeat(3, 1fr);
 		}
-		.minimal .segment-btn:nth-child(2n) {
+		.minimal .format-segment .segment-btn {
+			border-right: 1px solid var(--line);
+			border-bottom: 1px solid var(--line);
+			font-size: 0.72rem;
+		}
+		.minimal .format-segment .segment-btn:nth-child(3n) {
 			border-right: none;
 		}
-		.minimal .segment-btn:nth-child(-n + 2) {
+		.minimal .format-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
+		}
+		.minimal .format-segment .segment-btn:last-child {
+			border-right: none;
+		}
+	}
+
+	@media (max-width: 560px) {
+		.minimal
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			) {
+			grid-template-columns: repeat(2, 1fr);
+		}
+		.minimal
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			)
+			.segment-btn:nth-child(2n) {
+			border-right: none;
+		}
+		.minimal
+			.segment:not(.format-segment):not(.decade-segment):not(.maturity-segment):not(
+				.price-segment
+			)
+			.segment-btn:nth-child(-n + 2) {
 			border-bottom: 1px solid var(--line);
+		}
+
+		.minimal .price-segment {
+			grid-template-columns: repeat(3, 1fr);
+		}
+		.minimal .price-segment .segment-btn {
+			border-right: 1px solid var(--line);
+			border-bottom: 1px solid var(--line);
+		}
+		.minimal .price-segment .segment-btn:nth-child(3n) {
+			border-right: none;
+		}
+		.minimal .price-segment .segment-btn:nth-child(n + 4) {
+			border-bottom: none;
 		}
 	}
 
@@ -2220,6 +3525,32 @@
 		.minimal .decade-segment .segment-btn:nth-child(n + 4) {
 			border-bottom: none;
 		}
+	}
+
+	.minimal .rec-title-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.45rem 0.55rem;
+		margin: 0 0 0.5rem;
+	}
+	.minimal .rec-title-row .rec-title {
+		margin: 0;
+	}
+	.minimal .age-badge {
+		display: inline-flex;
+		align-items: center;
+		flex-shrink: 0;
+		padding: 0.14rem 0.42rem;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.06);
+		color: var(--ink);
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		line-height: 1.2;
+		text-transform: uppercase;
 	}
 
 	.minimal .media-preview.audio-preview {
@@ -2360,6 +3691,14 @@
 		opacity: 0.5;
 	}
 
+	.minimal .cta-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin-top: 0.35rem;
+		align-items: stretch;
+		align-self: stretch;
+	}
 	.minimal .cta {
 		appearance: none;
 		border: none;
@@ -2376,8 +3715,9 @@
 		align-items: center;
 		justify-content: center;
 		gap: 0.5rem;
-		margin-top: 0.35rem;
-		align-self: flex-start;
+		margin-top: 0;
+		flex: 1 1 auto;
+		min-width: 8rem;
 	}
 	.minimal .cta:hover:not(:disabled) {
 		background: #fff;
@@ -2385,6 +3725,95 @@
 	.minimal .cta:disabled {
 		opacity: 0.35;
 		cursor: not-allowed;
+	}
+	.minimal .cta-surprise {
+		flex: 0 1 auto;
+		color: var(--muted);
+		background: transparent;
+		border: 1px solid var(--line);
+	}
+	.minimal .cta-surprise:hover:not(:disabled) {
+		color: var(--ink);
+		border-color: rgba(160, 140, 240, 0.55);
+		background: rgba(255, 255, 255, 0.04);
+	}
+	.minimal .save-btn {
+		appearance: none;
+		margin-left: auto;
+		border: 1px solid var(--line);
+		background: transparent;
+		color: var(--muted);
+		cursor: pointer;
+		border-radius: 6px;
+		padding: 0.1rem 0.4rem;
+		font: inherit;
+		font-size: 1rem;
+		line-height: 1.2;
+		flex-shrink: 0;
+	}
+	.minimal .save-btn:hover {
+		color: var(--ink);
+		border-color: rgba(160, 140, 240, 0.55);
+	}
+	.minimal .save-btn.saved {
+		color: #c4b5fd;
+		border-color: rgba(160, 140, 240, 0.55);
+	}
+	.minimal .aura-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		width: 100%;
+	}
+	.minimal .aura-list-card {
+		display: grid;
+		grid-template-columns: 4.25rem 1fr;
+		gap: 0.85rem;
+		align-items: start;
+		padding: 0.35rem 0;
+		border-bottom: 1px solid var(--line);
+	}
+	.minimal .aura-list-cover {
+		width: 4.25rem;
+		aspect-ratio: 2 / 3;
+		overflow: hidden;
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.06);
+	}
+	.minimal .aura-list-cover .cover,
+	.minimal .aura-list-cover .cover-fallback {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	.minimal .aura-list-meta {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.minimal .aura-list-meta .rec-title {
+		margin: 0;
+		font-size: 1.05rem;
+	}
+	.minimal .aura-list-remove {
+		appearance: none;
+		align-self: flex-start;
+		margin-top: 0.2rem;
+		border: 1px solid var(--line);
+		background: transparent;
+		cursor: pointer;
+		border-radius: 6px;
+		padding: 0.3rem 0.55rem;
+		font: inherit;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--muted);
+	}
+	.minimal .aura-list-remove:hover {
+		color: #f87171;
+		border-color: rgba(248, 113, 113, 0.45);
 	}
 
 	.minimal .spinner {
@@ -2413,6 +3842,65 @@
 		width: 100%;
 		display: flex;
 		justify-content: flex-start;
+	}
+
+	.minimal .loading-refresh {
+		margin-bottom: 0.75rem;
+		padding-bottom: 0.65rem;
+		border-bottom: 1px solid var(--line);
+	}
+
+	.minimal .rec-list-dimmed {
+		opacity: 0.5;
+		pointer-events: none;
+	}
+
+	.minimal .rec-skeleton {
+		pointer-events: none;
+	}
+
+	.minimal .skel-cover {
+		width: 110px;
+		aspect-ratio: 2 / 3;
+		border-radius: 8px;
+		border: 1px solid var(--line);
+		background: rgba(255, 255, 255, 0.08);
+		animation: skel-pulse 1.2s ease-in-out infinite;
+	}
+
+	@media (min-width: 900px) {
+		.minimal .skel-cover {
+			width: 140px;
+		}
+	}
+
+	.minimal .skel-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		padding-top: 0.2rem;
+	}
+
+	.minimal .skel-line {
+		height: 0.75rem;
+		width: 88%;
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.08);
+		animation: skel-pulse 1.2s ease-in-out infinite;
+	}
+
+	.minimal .skel-line-sm {
+		width: 26%;
+		height: 0.55rem;
+	}
+
+	.minimal .skel-line-lg {
+		width: 58%;
+		height: 1.1rem;
+	}
+
+	.minimal .skel-line-md {
+		width: 42%;
 	}
 
 	.minimal .rec-grid {
@@ -2644,6 +4132,48 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+	.minimal .game-platform-line {
+		margin: 0;
+		font-size: 0.8rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+	.minimal .game-store-sep {
+		width: 100%;
+		margin: 0.15rem 0;
+		border-top: 1px solid rgba(255, 255, 255, 0.18);
+	}
+	.minimal .game-cta-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.85rem;
+	}
+
+	.share-toast {
+		position: fixed;
+		bottom: 1.25rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 80;
+		padding: 0.55rem 0.9rem;
+		font-size: 0.75rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: #111;
+		background: #fff;
+		border: 2px solid #111;
+		box-shadow: 3px 3px 0 #111;
+		pointer-events: none;
+	}
+
+	:global(html[data-ui='minimal']) .share-toast {
+		color: #f2f2f5;
+		background: #1a1a22;
+		border-color: #3a3a48;
+		box-shadow: none;
+	}
 
 	@keyframes spin {
 		to {
@@ -2662,6 +4192,16 @@
 		}
 	}
 
+	@keyframes skel-pulse {
+		0%,
+		100% {
+			opacity: 0.55;
+		}
+		50% {
+			opacity: 1;
+		}
+	}
+
 	@media (prefers-reduced-motion: reduce) {
 		.desktop .brand,
 		.minimal .min-brand {
@@ -2670,6 +4210,13 @@
 		.desktop .spinner,
 		.minimal .spinner {
 			animation: none;
+		}
+		.desktop .skel-cover,
+		.desktop .skel-line,
+		.minimal .skel-cover,
+		.minimal .skel-line {
+			animation: none;
+			opacity: 0.7;
 		}
 	}
 </style>
