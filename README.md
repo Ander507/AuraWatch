@@ -1,10 +1,10 @@
 # AuraWatch
 
-A vibe finder for movies, TV, anime, and songs — tell it what you’re in the mood for, get a handful of titles that actually fit.
+A vibe finder for movies, TV, anime, songs, and games — tell it what you’re in the mood for, get titles that actually fit.
 
 ![AuraWatch desktop UI](docs/desktop.png)
 
-**[Try the demo →](https://aura-watching.vercel.app/)**
+**[Try the live demo →](https://aura-watching.vercel.app/)**
 
 <p align="center">
   <img src="docs/minimal.png" alt="Minimal theme" width="48%" />
@@ -15,9 +15,25 @@ A vibe finder for movies, TV, anime, and songs — tell it what you’re in the 
 
 ## Quick start
 
-If it’s deployed, open the link above. That’s it.
+Open the demo link above. That’s it.
 
-To run it yourself:
+---
+
+## Features
+
+- **Formats** — movies, series, anime, songs, or games (multi-select for media)
+- **Vibe in, picks out** — free-text notes, “like these” titles, genres, decade, and content rating
+- **Surprise Me** — keeps your Format, randomizes the vibe and light filters
+- **Games done right** — platform filter, price range, IGDB covers, and store CTAs (Steam / Epic / GOG / console / Official Site)
+- **Where to watch / listen** — region-aware streaming logos for media; listen links for songs
+- **Shareable vibes** — copy a link that restores your filters; save picks to a local My List
+- **Two themes** — dark minimal or light desktop board, remembered in the browser
+
+---
+
+## Run it locally
+
+**Needs Node 20+.**
 
 ```bash
 npm install
@@ -25,30 +41,27 @@ cp .env.example .env
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Needs **Node 20+**.
+Then open [http://localhost:5173](http://localhost:5173).
 
 ### Environment
 
-Put these in `.env` (see `.env.example`):
+Copy `.env.example` → `.env` and fill what you have:
 
 | Variable | What it’s for |
 |---|---|
-| `GEMINI_API_KEYS` | Comma-separated Gemini keys. The app rotates through them when one fails. |
-| `TMDB_API_KEY` | Posters, similar-title search, and “where to watch” providers. |
+| `GEMINI_API_KEYS` | Comma-separated Gemini keys. The app rotates when one fails. |
+| `TMDB_API_KEY` | Posters, similar-title search, trailers, and watch providers. |
 | `TMDB_WATCH_REGION` | Fallback region only — users pick their own in the UI. |
+| `IGDB_CLIENT_ID` | Twitch / IGDB client ID — Games covers, platforms, store links. |
+| `IGDB_CLIENT_SECRET` | Twitch / IGDB client secret. |
 
-No keys? It still runs off a small local catalog. Recommendations get smarter once Gemini + TMDB are set. Song mode needs Gemini.
+No keys? It still runs off a small local catalog. Recommendations get sharper once Gemini + TMDB are set. Song mode needs Gemini. Games mode needs IGDB.
 
----
-
-## Features
-
-- Pick a format (movies, series, anime, songs, or all) and multi-select genres
-- Free-text vibe prompt *and/or* “similar to…” titles with live search
-- Region-aware streaming provider logos (from TMDB / JustWatch data)
-- Dual UI themes — dark minimal or light desktop board — remembered in localStorage
-- Listen links for songs (Apple Music / Spotify-style search) via iTunes
-- Falls back to a curated catalog when external APIs flake
+```bash
+npm run build    # production build
+npm run preview  # preview the build
+npm run check    # types / svelte-check
+```
 
 ---
 
@@ -57,32 +70,27 @@ No keys? It still runs off a small local catalog. Recommendations get smarter on
 Recommendations don’t all go through one path. The backend picks the least-fake option for what you asked:
 
 1. **Songs** → Gemini suggests tracks → iTunes fills covers and listen URLs  
-2. **“Like this title”** → TMDB similar / recommendations, filtered by your genres  
-3. **Vibe / genres** → Gemini concierge (strict JSON) → TMDB for posters + providers  
-4. **Anything fails** → score a local catalog by format, genres, and vibe keywords  
+2. **Games** → Gemini suggests titles → IGDB fills covers, platforms, and store links (Steam / Epic / GOG by category, Official Site when PC has no storefront)  
+3. **“Like this title”** → TMDB similar / recommendations, filtered by your genres  
+4. **Vibe / genres** → Gemini concierge (strict JSON) → TMDB for posters + providers  
+5. **Anything fails** → score a local catalog by format, genres, and vibe keywords  
 
-Gemini is great at *taste* and terrible at *valid JSON*, so there’s a repair pass for fences, curly quotes, and trailing commas. Keys rotate with a short cooldown when one burns out. Genres on a result are the title’s real tags — never a copy of whatever you clicked in the UI.
+Gemini is good at *taste* and bad at *valid JSON*, so there’s a repair pass for fences, curly quotes, and trailing commas. Keys rotate with a short cooldown when one burns out. Result genres are the title’s real tags — never a parrot of whatever you clicked in the UI.
 
-Stack: SvelteKit 2 + Svelte 5, Tailwind 4, Gemini Flash, TMDB, iTunes Search.
+Surprise Me deliberately does **not** change Format — it only rolls notes and light filters so you stay in the lane you already picked.
 
----
-
-## Scripts
-
-```bash
-npm run dev      # local server
-npm run build    # production build
-npm run preview  # preview the build
-npm run check    # svelte-check / types
-```
+Stack: SvelteKit 2 + Svelte 5, Tailwind 4, Gemini Flash, TMDB, IGDB, iTunes Search.
 
 ---
 
 ## Credits
 
-- [The Movie Database (TMDB)](https://www.themoviedb.org/) for search, similar titles, posters, and watch providers  
-- [Google Gemini](https://ai.google.dev/) for the concierge prompts  
-- [Apple iTunes Search API](https://affiliate.itunes.apple.com/resources/documentation/itunes-store-web-service-search-api/) for music lookup  
+- [The Movie Database (TMDB)](https://www.themoviedb.org/) — search, similar titles, posters, trailers, watch providers  
+- [IGDB](https://www.igdb.com/) / [Twitch](https://dev.twitch.tv/) — game covers, platforms, and store websites  
+- [Google Gemini](https://ai.google.dev/) — concierge prompts  
+- [Apple iTunes Search API](https://affiliate.itunes.apple.com/resources/documentation/itunes-store-web-service-search-api/) — music lookup  
 - [SvelteKit](https://svelte.dev/docs/kit) + [Tailwind CSS](https://tailwindcss.com/)
 
-**AI usage:** under 19%.
+---
+
+Made with ❤️ by Ander507 @ Stardance - HackClub
