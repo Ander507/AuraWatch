@@ -18,12 +18,16 @@ function withKey(url: string, apiKey: string, useBearer: boolean) {
 }
 
 /** Fetch number_of_seasons for a TMDB TV id. */
-export async function fetchTvSeasonCount(tmdbId: number): Promise<number | null> {
+export async function fetchTvSeasonCount(
+	tmdbId: number,
+	language?: string | null
+): Promise<number | null> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey || !tmdbId) return null;
 
+	const lang = String(language || '').trim() || 'en-US';
 	const url = withKey(
-		`https://api.themoviedb.org/3/tv/${tmdbId}?language=en-US`,
+		`https://api.themoviedb.org/3/tv/${tmdbId}?language=${encodeURIComponent(lang)}`,
 		apiKey,
 		useBearer
 	);

@@ -133,6 +133,11 @@ async function tmdbJson(url: string, headers: Record<string, string>) {
 	return cachedJsonFetch(url, { headers }, { ttlMs: 15 * 60 * 1000 });
 }
 
+function tmdbLang(raw?: string | null): string {
+	const s = String(raw || '').trim();
+	return s || 'en-US';
+}
+
 function norm(s: string) {
 	return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -170,10 +175,13 @@ async function searchReference(
 	prefer: 'tv' | 'movie' | 'either',
 	headers: Record<string, string>,
 	apiKey: string,
-	useBearer: boolean
+	useBearer: boolean,
+	language?: string | null
 ): Promise<RawHit | null> {
 	const { title, year } = parseSearchQuery(query, null);
 	if (!title) return null;
+
+	const lang = tmdbLang(language);
 
 	// Always score both movie + TV — prefer only breaks ties. Prevents "TV Series" format
 	// from latching onto a weak TV hit for a famous movie like a Western.
@@ -188,7 +196,7 @@ async function searchReference(
 		const params = new URLSearchParams({
 			query: title,
 			include_adult: 'false',
-			language: 'en-US',
+			language: lang,
 			page: '1'
 		});
 		if (year) {
@@ -256,10 +264,12 @@ async function fetchSimilarList(
 	mediaType: 'movie' | 'tv',
 	headers: Record<string, string>,
 	apiKey: string,
-	useBearer: boolean
+	useBearer: boolean,
+	language?: string | null
 ): Promise<RawHit[]> {
+	const lang = tmdbLang(language);
 	const url = withKey(
-		`https://api.themoviedb.org/3/${mediaType}/${id}/similar?language=en-US&page=1`,
+		`https://api.themoviedb.org/3/${mediaType}/${id}/similar?language=${encodeURIComponent(lang)}&page=1`,
 		apiKey,
 		useBearer
 	);
@@ -293,10 +303,12 @@ async function fetchRecommendationsList(
 	mediaType: 'movie' | 'tv',
 	headers: Record<string, string>,
 	apiKey: string,
-	useBearer: boolean
+	useBearer: boolean,
+	language?: string | null
 ): Promise<RawHit[]> {
+	const lang = tmdbLang(language);
 	const url = withKey(
-		`https://api.themoviedb.org/3/${mediaType}/${id}/recommendations?language=en-US&page=1`,
+		`https://api.themoviedb.org/3/${mediaType}/${id}/recommendations?language=${encodeURIComponent(lang)}&page=1`,
 		apiKey,
 		useBearer
 	);
@@ -470,9 +482,12 @@ export async function findSimilarPicks(opts: {
 	limit?: number;
 	yearFrom?: number | null;
 	yearTo?: number | null;
+	language?: string | null;
 }): Promise<SimilarPick[]> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey) return [];
+
+	const language = tmdbLang(opts.language);
 
 	const titles = [
 		...(opts.likeTitles || []),
@@ -503,7 +518,7 @@ export async function findSimilarPicks(opts: {
 	// Resolve like-titles by best real match (movie OR tv), not by forced format
 	const refs = (
 		await Promise.all(
-			uniqueTitles.map((t) => searchReference(t, 'either', headers, apiKey, useBearer))
+			uniqueTitles.map((t) => searchReference(t, 'either', headers, apiKey, useBearer, language))
 		)
 	).filter((r): r is RawHit => Boolean(r));
 
@@ -524,8 +539,8 @@ export async function findSimilarPicks(opts: {
 	const pools = await Promise.all(
 		refs.map(async (ref) => {
 			const [recs, sims] = await Promise.all([
-				fetchRecommendationsList(ref.id, ref.mediaType, headers, apiKey, useBearer),
-				fetchSimilarList(ref.id, ref.mediaType, headers, apiKey, useBearer)
+				fetchRecommendationsList(ref.id, ref.mediaType, headers, apiKey, useBearer, language),
+				fetchSimilarList(ref.id, ref.mediaType, headers, apiKey, useBearer, language)
 			]);
 			return [...recs, ...sims];
 		})
@@ -587,7 +602,7 @@ export async function findSimilarPicks(opts: {
 			let fallbackUrls: string[] = [];
 
 			if (!posterUrl) {
-				const art = await resolveTmdbArtwork(h.id, h.mediaType);
+				const art = await resolveTmdbArtwork(h.id, h.mediaType, language);
 				posterUrl = art.posterUrl;
 				fallbackUrls = art.fallbackUrls;
 			}

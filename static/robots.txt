@@ -1,5 +1,5 @@
-# https://aura-watching.vercel.app
+# https://aurawatch.org
 User-agent: *
 Allow: /
 
-Sitemap: https://aura-watching.vercel.app/sitemap.xml
+Sitemap: https://aurawatch.org/sitemap.xml

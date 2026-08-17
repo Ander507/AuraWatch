@@ -44,13 +44,15 @@ function scoreTrailer(v: TmdbVideo): number {
 export async function fetchTmdbTrailerKey(opts: {
 	tmdbId: number;
 	mediaType: 'movie' | 'tv';
+	language?: string | null;
 }): Promise<string | null> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	const id = opts.tmdbId;
 	if (!apiKey || !id) return null;
 
+	const lang = String(opts.language || '').trim() || 'en-US';
 	const url = withKey(
-		`https://api.themoviedb.org/3/${opts.mediaType}/${id}/videos?language=en-US`,
+		`https://api.themoviedb.org/3/${opts.mediaType}/${id}/videos?language=${encodeURIComponent(lang)}`,
 		apiKey,
 		useBearer
 	);

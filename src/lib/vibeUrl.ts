@@ -15,10 +15,20 @@ export type VibeUrlState = {
 	seriesLength: string;
 	platforms: string[];
 	region: string;
+	language: string;
 	notesWeight: number | null;
 };
 
-const FORMAT_IDS = new Set(['movie', 'series', 'anime', 'songs', 'games']);
+const FORMAT_IDS = new Set([
+	'movie',
+	'series',
+	'anime',
+	'songs',
+	'games',
+	'books',
+	'boardgames',
+	'fullvibe'
+]);
 
 function splitList(raw: string | null): string[] {
 	if (!raw) return [];
@@ -46,7 +56,9 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		params.has('exclude') ||
 		params.has('anti') ||
 		params.has('platforms') ||
-		params.has('platform');
+		params.has('platform') ||
+		params.has('lang') ||
+		params.has('language');
 	if (!hasAny) return null;
 
 	const typesRaw = params.get('types') || params.get('format') || '';
@@ -56,6 +68,13 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		.map((t) => (t === 'movies' ? 'movie' : t))
 		.map((t) => (t === 'game' || t === 'gaming' ? 'games' : t))
 		.map((t) => (t === 'song' || t === 'music' ? 'songs' : t))
+		.map((t) =>
+			t === 'book' || t === 'manga' || t === 'books-manga' ? 'books' : t
+		)
+		.map((t) =>
+			t === 'board' || t === 'boardgame' || t === 'tabletop' ? 'boardgames' : t
+		)
+		.map((t) => (t === 'vibe' || t === 'itinerary' || t === 'combo' ? 'fullvibe' : t))
 		.filter((t) => FORMAT_IDS.has(t));
 
 	const weightRaw = params.get('weight') || params.get('notesWeight');
@@ -84,6 +103,7 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 			.toLowerCase(),
 		platforms: splitList(params.get('platforms') || params.get('platform')),
 		region: (params.get('region') || '').trim().toUpperCase(),
+		language: (params.get('lang') || params.get('language') || '').trim(),
 		notesWeight
 	};
 }
@@ -101,6 +121,7 @@ export function buildVibeSearchParams(state: VibeUrlState): URLSearchParams {
 	if (state.seriesLength) p.set('seasons', state.seriesLength);
 	if (state.platforms.length) p.set('platforms', state.platforms.join(','));
 	if (state.region) p.set('region', state.region);
+	if (state.language && state.language !== 'en-US') p.set('lang', state.language);
 	if (state.notesWeight != null && state.notesWeight !== 70) {
 		p.set('weight', String(state.notesWeight));
 	}

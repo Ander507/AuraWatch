@@ -1,6 +1,13 @@
 /** One-click vibe roulette — random notes (+ light filters), keeps current Format */
 
-export type SurpriseFormat = 'movie' | 'series' | 'anime' | 'songs' | 'games';
+export type SurpriseFormat =
+	| 'movie'
+	| 'series'
+	| 'anime'
+	| 'songs'
+	| 'games'
+	| 'books'
+	| 'boardgames';
 
 export type SurpriseRoll = {
 	types: SurpriseFormat[];
@@ -62,6 +69,26 @@ const VIBES: Record<SurpriseFormat, string[]> = {
 		'atmospheric horror, more dread than jump scares',
 		'co-op crafting and exploration',
 		'stylish action game with a strong soundtrack'
+	],
+	books: [
+		'rainy sunday fantasy with found family',
+		'slow literary mystery that trusts the reader',
+		'space opera with messy politics',
+		'quiet manga about growing up and missing home',
+		'thriller you finish in one night',
+		'cozy romance with actual personality',
+		'dark academia vibes without the pretension',
+		'nonfiction that still feels like a story'
+	],
+	boardgames: [
+		'cozy engine builder for a rainy table',
+		'party game that gets loud fast',
+		'tense 2-player duel with no downtime',
+		'legacy campaign for a dedicated group',
+		'light family game after dinner',
+		'social deduction with real paranoia',
+		'heavy euro that rewards planning',
+		'cooperative puzzle against the board'
 	]
 };
 
@@ -96,10 +123,34 @@ const GENRE_POOLS: Record<SurpriseFormat, string[][]> = {
 		['Horror', 'Survival'],
 		['Co-op', 'Sandbox'],
 		['Roguelike', 'Action']
+	],
+	books: [
+		['Fantasy', 'Adventure'],
+		['Mystery', 'Thriller'],
+		['Romance', 'Literary'],
+		['Manga', 'Slice of Life'],
+		['Sci-Fi', 'Horror'],
+		['Memoir', 'Nonfiction']
+	],
+	boardgames: [
+		['Strategy', 'Euro'],
+		['Party', 'Family'],
+		['Co-op', 'Campaign'],
+		['2-Player', 'Light'],
+		['Social Deduction', 'Party'],
+		['Deckbuilding', 'Strategy']
 	]
 };
 
-const ALL_FORMATS: SurpriseFormat[] = ['movie', 'series', 'anime', 'songs', 'games'];
+const ALL_FORMATS: SurpriseFormat[] = [
+	'movie',
+	'series',
+	'anime',
+	'songs',
+	'games',
+	'books',
+	'boardgames'
+];
 
 function pick<T>(arr: T[]): T {
 	return arr[Math.floor(Math.random() * arr.length)];

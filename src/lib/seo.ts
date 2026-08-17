@@ -1,7 +1,7 @@
 /** Site SEO defaults — geared at “can’t find what to watch” discovery */
 export const SITE = {
 	name: 'AuraWatch',
-	url: 'https://aura-watching.vercel.app',
+	url: 'https://aurawatch.org',
 	title: 'AuraWatch — Can’t Decide What to Watch? Get One Perfect Pick',
 	description:
 		'Stuck scrolling with nothing to watch — or play? AuraWatch picks a movie, TV show, anime, song, or game that matches your vibe — by genre, decade, and titles you already love. Stop decision paralysis.',

@@ -3,38 +3,51 @@
 	import { quintOut } from 'svelte/easing';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { enhance, deserialize } from '$app/forms';
+	import { signIn, signOut } from '@auth/sveltekit/client';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
+	import {
+		CONTENT_LANGUAGES,
+		DEFAULT_LANGUAGE,
+		normalizeLanguage
+	} from '$lib/languages';
 	import { desktopCardEntrance } from '$lib/animations/desktop';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
+	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 	import { buildVibeSearchParams, parseVibeSearchParams, vibeShareUrl } from '$lib/vibeUrl';
 	import { rollSurpriseMe } from '$lib/surpriseMe';
+	import { SITE } from '$lib/seo';
+	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
 	import {
 		loadAuraList,
 		saveAuraList,
-		toggleAuraListItem,
-		makeId,
-		type AuraListItem,
-		isOnAuraList
+		type AuraListItem
 	} from '$lib/auraList';
+	import { formatLetterboxdChecklist } from '$lib/letterboxdExport';
+	import { ui, setUiTheme, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 
 	const REGION_KEY = 'aurawatch_region';
-	const UI_KEY = 'aurawatch_ui';
+	const LANG_KEY = 'aurawatch_language';
 	const ZFLIX_KEY = 'aurawatch_zflix';
 	const NOTES_WEIGHT_DEFAULT = 70;
-
-	type UiTheme = 'desktop' | 'minimal';
+	const LINK_COPIED_TOAST = '[SYSTEM]: Link copied to clipboard successfully.';
 
 	const FORMAT_OPTIONS = [
 		{ id: 'movie' as const, label: 'Movies' },
 		{ id: 'series' as const, label: 'TV Series' },
 		{ id: 'anime' as const, label: 'Anime' },
 		{ id: 'songs' as const, label: 'Songs' },
-		{ id: 'games' as const, label: 'Games' }
+		{ id: 'games' as const, label: 'Games' },
+		{ id: 'books' as const, label: 'Books & Manga' },
+		{ id: 'boardgames' as const, label: 'Board Games' }
 	];
 
 	const DECADE_OPTIONS = [
@@ -94,7 +107,8 @@
 		{ id: 'binge' as const, label: '8+', hint: 'Long binge' }
 	];
 
-	type FormatId = (typeof FORMAT_OPTIONS)[number]['id'];
+	type ChipFormatId = (typeof FORMAT_OPTIONS)[number]['id'];
+	type FormatId = ChipFormatId | 'fullvibe';
 
 	const ALL_MEDIA_GENRES = [
 		'Action',
@@ -112,7 +126,7 @@
 		'Slice of Life'
 	];
 
-	const GENRES_BY_FORMAT: Record<FormatId, string[]> = {
+	const GENRES_BY_FORMAT: Record<ChipFormatId, string[]> = {
 		movie: [
 			'Action',
 			'Comedy',
@@ -199,10 +213,46 @@
 			'Open World',
 			'Co-op',
 			'Competitive'
+		],
+		books: [
+			'Fantasy',
+			'Sci-Fi',
+			'Romance',
+			'Mystery',
+			'Thriller',
+			'Horror',
+			'Literary',
+			'Nonfiction',
+			'Memoir',
+			'Manga',
+			'Shonen',
+			'Shojo',
+			'Seinen',
+			'Slice of Life',
+			'Historical',
+			'Graphic Novel'
+		],
+		boardgames: [
+			'Strategy',
+			'Party',
+			'Co-op',
+			'Legacy',
+			'Deckbuilding',
+			'Worker Placement',
+			'Area Control',
+			'Social Deduction',
+			'Family',
+			'Solo',
+			'2-Player',
+			'Euro',
+			'Ameritrash',
+			'Campaign',
+			'Light',
+			'Heavy'
 		]
 	};
 
-	let uiTheme = $state<UiTheme>('desktop');
+	let uiTheme = $derived(ui.theme);
 	let selectedTypes = $state<FormatId[]>([]);
 	let selectedGenres = $state<string[]>([]);
 	let vibePrompt = $state('');
@@ -210,6 +260,7 @@
 	let likeTitles = $state<string[]>([]);
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
 	let watchRegion = $state('US');
+	let selectedLanguage = $state(DEFAULT_LANGUAGE);
 	let zflixEnabled = $state(false);
 	let selectedDecade = $state('');
 	let selectedMaturity = $state('');
@@ -221,10 +272,55 @@
 	let errMsg = $state('');
 	let clockLabel = $state('');
 	let playingPreview = $state<string | null>(null); // unique key per card
+	let loadedCovers = new SvelteSet<string>();
 	let shareToast = $state('');
 	let shareToastTimer: ReturnType<typeof setTimeout> | null = null;
+	// adding a clean zero-result fallback state so the UI never breaks when a query comes back empty
+	let vibeMissed = $state(false);
 	let auraList = $state<AuraListItem[]>([]);
 	let viewMode = $state<'match' | 'list'>('match');
+	// moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux
+	let mobilePane = $state<'vibe' | 'match' | 'list'>('vibe');
+
+	function setMobilePane(pane: 'vibe' | 'match' | 'list') {
+		mobilePane = pane;
+		if (pane === 'match') viewMode = 'match';
+		if (pane === 'list') viewMode = 'list';
+	}
+	// which pick the sticky save fab is aimed at (defaults to first result)
+	let fabSaveIndex = $state(0);
+	let showLoginPrompt = $state(false);
+	let saveBusy = $state(false);
+	// dropdown for picking which playlist to drop the saved item into
+	let savePickerItem = $state<Rec | null>(null);
+	let newPlaylistTitle = $state('');
+	let playlistBusy = $state(false);
+	let savingListId = $state<string | null>(null);
+
+	type CloudPlaylistClient = {
+		id: string;
+		slug: string;
+		title: string;
+		items: Array<{
+			id: string;
+			title: string;
+			coverUrl?: string | null;
+			format?: string;
+			description?: string | null;
+			providers?: AuraListItem['providers'];
+		}>;
+	};
+
+	// optimistic playlist overlay so the picker can close before turso answers
+	let playlistOverride = $state<CloudPlaylistClient[] | null>(null);
+
+	let session = $derived(page.data.session);
+	let cloudPlaylists = $derived(
+		(playlistOverride ?? page.data.cloudPlaylists ?? []) as CloudPlaylistClient[]
+	);
+	let totalSavedCount = $derived(
+		cloudPlaylists.reduce((n: number, p: CloudPlaylistClient) => n + (p.items?.length || 0), 0)
+	);
 
 	type Provider = {
 		name: string;
@@ -251,7 +347,9 @@
 		coverFallbacks?: string[];
 		coverBroken?: boolean;
 		artist?: string;
-		kind?: 'song' | 'media' | 'game';
+		author?: string;
+		creator?: string;
+		kind?: 'song' | 'media' | 'game' | 'book' | 'boardgame' | 'vibe' | 'snack';
 		listen_url?: string;
 		preview_url?: string;
 		trailer_youtube_key?: string;
@@ -261,13 +359,27 @@
 		priceLabel?: string;
 		store_name?: string;
 		storeLinks?: Array<{ platform: string; url: string; store?: string }>;
+		complexity?: string;
+		playingTime?: number;
+		vibeLabel?: string;
+		watch?: Rec;
+		music?: Rec;
+		snack?: Rec;
 	};
 
-	// song / games mode — exclusive formats
+	// exclusive format lanes (can't mix with movie/tv multi-select)
 	let isSongs = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'songs');
 	let isGames = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'games');
+	let isBooks = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'books');
+	let isBoardGames = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'boardgames');
+	// bgg api is still pending approval, parking the tabletop lane so nothing half-broken ships
+	let boardGamesSoon = $derived(isBoardGames && BOARD_GAMES_COMING_SOON);
+	let isFullVibe = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'fullvibe');
+	let isExclusiveLane = $derived(isSongs || isGames || isBooks || isBoardGames || isFullVibe);
+	// only show the tmdb language stuff if we're actually looking at movies/tv/anime
+	let isMediaLane = $derived(!isExclusiveLane);
 	let showSeriesLength = $derived(
-		selectedTypes.includes('series') && !isSongs && !isGames
+		selectedTypes.includes('series') && !isExclusiveLane
 	);
 
 	let results = $state<Rec[]>([]);
@@ -275,19 +387,25 @@
 	let visibleGenres = $derived.by(() => {
 		if (isSongs) return GENRES_BY_FORMAT.songs;
 		if (isGames) return GENRES_BY_FORMAT.games;
+		if (isBooks) return GENRES_BY_FORMAT.books;
+		if (isBoardGames) return GENRES_BY_FORMAT.boardgames;
+		if (isFullVibe) return ALL_MEDIA_GENRES;
 		if (!selectedTypes.length) return ALL_MEDIA_GENRES;
 		const set = new Set<string>();
 		for (const t of selectedTypes) {
-			for (const g of GENRES_BY_FORMAT[t]) set.add(g);
+			if (t === 'fullvibe') continue;
+			for (const g of GENRES_BY_FORMAT[t] || []) set.add(g);
 		}
 		return [...set];
 	});
 
 	let canSubmit = $derived(
-		Boolean(vibePrompt.trim()) ||
-			likeTitles.length > 0 ||
-			selectedGenres.length > 0 ||
-			selectedTypes.length > 0
+		isFullVibe
+			? Boolean(vibePrompt.trim()) || selectedGenres.length > 0
+			: Boolean(vibePrompt.trim()) ||
+					likeTitles.length > 0 ||
+					selectedGenres.length > 0 ||
+					selectedTypes.length > 0
 	);
 
 	let notesWeightLabel = $derived(
@@ -298,7 +416,10 @@
 	let activeAdvancedCount = $derived(
 		(antiVibe.trim() ? 1 : 0) +
 			(selectedDecade ? 1 : 0) +
-			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0)
+			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0) +
+			(zflixEnabled && isMediaLane ? 1 : 0) +
+			(selectedMaturity && isMediaLane ? 1 : 0) +
+			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0)
 	);
 
 	/** Actual API genres only — never parrot user picks */
@@ -350,6 +471,10 @@
 		// fallback badge text when gemini forgot the refs lol
 		if (item.kind === 'song' || item.mediaType === 'Song') return 'song picks';
 		if (item.kind === 'game' || item.mediaType === 'Game') return 'game picks';
+		if (item.kind === 'book' || item.mediaType === 'Book' || item.mediaType === 'Manga')
+			return 'book picks';
+		if (item.kind === 'boardgame' || item.mediaType === 'Board Game') return 'tabletop picks';
+		if (item.kind === 'vibe') return item.vibeLabel || 'full vibe';
 		return "tonight's pick";
 	}
 
@@ -365,18 +490,74 @@
 	}
 
 	function gameStoreLinks(item: Rec): Array<{ platform: string; url: string; store?: string }> {
-		if (item.storeLinks?.length) return item.storeLinks;
-		const url = primaryGameUrl(item);
-		const label =
-			item.store_name ||
-			item.providers?.find((p) => p.url)?.name ||
-			'Store';
-		return url ? [{ platform: label, url, store: label }] : [];
+		const raw = item.storeLinks?.length
+			? item.storeLinks
+			: (() => {
+					const url = primaryGameUrl(item);
+					const label =
+						item.store_name ||
+						item.providers?.find((p) => p.url)?.name ||
+						'Store';
+					return url ? [{ platform: label, url, store: label }] : [];
+				})();
+		return raw.filter((l) => !/amazon/i.test(l.platform || l.store || ''));
 	}
 
 	function storeCtaLabel(link: { platform: string; store?: string }): string {
 		const name = link.platform || link.store || 'Store';
 		return `View on ${name}`;
+	}
+
+	// grouping ireland with the uk and funneling all of mainland europe into the german store
+	function getAmazonAffiliateLink(item: Rec, regionCode: string): string {
+		const title = String(item.title || '').trim();
+		const author = String(item.author || item.creator || item.artist || '').trim();
+		const manga = /manga/i.test(item.mediaType || '');
+		let searchText = title;
+		let extra = '';
+
+		if (isBookRec(item)) {
+			// appending the author and locking the search to the stripbooks index so users get the actual book instead of a movie rental
+			searchText = author ? `${title} ${author}` : `${title} ${manga ? 'manga' : 'book'}`;
+			extra = '&i=stripbooks';
+		} else if (isBoardRec(item)) {
+			// adding category keywords to keep amazon search results precise
+			if (!/board\s*game/i.test(title)) searchText = `${title} board game`;
+		}
+
+		const query = encodeURIComponent(searchText);
+		const region = String(regionCode || '').trim().toUpperCase();
+
+		if (region === 'GB' || region === 'IE') {
+			return `https://www.amazon.co.uk/s?k=${query}${extra}&tag=chloechecksit-20`;
+		}
+		if (region === 'IT') {
+			return `https://www.amazon.it/s?k=${query}${extra}&tag=chloechecksit-20`;
+		}
+		if (region === 'US') {
+			return `https://www.amazon.com/s?k=${query}${extra}&tag=chloechecksit-20`;
+		}
+
+		const mainlandEurope = [
+			'DE',
+			'DK',
+			'FR',
+			'ES',
+			'NL',
+			'SE',
+			'NO',
+			'FI',
+			'PL',
+			'BE',
+			'AT',
+			'CH',
+			'PT'
+		];
+		if (mainlandEurope.includes(region)) {
+			return `https://www.amazon.de/s?k=${query}${extra}&tag=chloechecksit-21`;
+		}
+
+		return `https://www.amazon.com/s?k=${query}${extra}&tag=chloechecksit-20`;
 	}
 
 	function primaryGameUrl(item: Rec): string {
@@ -396,6 +577,20 @@
 		return item.kind === 'game' || item.mediaType === 'Game';
 	}
 
+	function isBookRec(item: Rec): boolean {
+		return (
+			item.kind === 'book' || item.mediaType === 'Book' || item.mediaType === 'Manga'
+		);
+	}
+
+	function isBoardRec(item: Rec): boolean {
+		return item.kind === 'boardgame' || item.mediaType === 'Board Game';
+	}
+
+	function isVibeRec(item: Rec): boolean {
+		return item.kind === 'vibe' || item.mediaType === 'Vibe Package';
+	}
+
 	function previewKey(item: Rec, i: number) {
 		return `${item.title}::${i}`;
 	}
@@ -408,6 +603,7 @@
 	function onCoverError(index: number) {
 		results = results.map((r, j) => {
 			if (j !== index) return r;
+			if (r.cover) loadedCovers.delete(r.cover);
 			const fallbacks = r.coverFallbacks?.length ? [...r.coverFallbacks] : [];
 			if (fallbacks.length > 0) {
 				const next = fallbacks.shift()!;
@@ -417,26 +613,47 @@
 		});
 	}
 
+	function markCoverLoaded(url: string) {
+		if (url) loadedCovers.add(url);
+	}
+
 	function normalizeRec(raw: Record<string, any> | null | undefined): Rec {
-		// song vs game vs media — backend field names are a bit all over the place
-		const kind =
+		// song vs game vs book vs board vs vibe package — backend field names wander a bit
+		const kind: Rec['kind'] =
 			raw?.kind === 'song' || raw?.mediaType === 'Song'
 				? 'song'
 				: raw?.kind === 'game' || raw?.mediaType === 'Game'
 					? 'game'
-					: 'media';
+					: raw?.kind === 'book' ||
+						  raw?.mediaType === 'Book' ||
+						  raw?.mediaType === 'Manga'
+						? 'book'
+						: raw?.kind === 'boardgame' || raw?.mediaType === 'Board Game'
+							? 'boardgame'
+							: raw?.kind === 'vibe' || raw?.mediaType === 'Vibe Package'
+								? 'vibe'
+								: raw?.kind === 'snack'
+									? 'snack'
+									: 'media';
 		return {
 			title: raw?.title || '???',
-			cover: raw?.cover || '',
-			pitch: raw?.pitch || raw?.matchReason || '',
+			cover: raw?.cover || raw?.poster_path || raw?.image || '',
+			pitch: raw?.pitch || raw?.matchReason || raw?.overview || raw?.description || '',
 			genres: raw?.genres || raw?.actualGenres || [],
 			mediaType: raw?.mediaType,
 			seasonInfo:
-				raw?.seasonInfo || (raw?.releaseYear ? String(raw.releaseYear) : undefined),
-			rating: raw?.rating,
+				raw?.seasonInfo ||
+				(raw?.releaseYear
+					? String(raw.releaseYear)
+					: raw?.year
+						? String(raw.year)
+						: raw?.release_date
+							? String(raw.release_date)
+							: undefined),
+			rating: raw?.rating ?? raw?.vote_average,
 			providers: raw?.providers || [],
 			region: raw?.region,
-			watchLink: raw?.watch_link || raw?.watchLink || null,
+			watchLink: raw?.watch_link || raw?.watchLink || raw?.recipeUrl || null,
 			likeTitle: raw?.likeTitle || (likeTitles.length ? likeTitles.join(', ') : undefined),
 			likeTitles: raw?.likeTitles || (likeTitles.length ? likeTitles : undefined),
 			coverFallbacks: Array.isArray(raw?.coverFallbacks)
@@ -444,8 +661,9 @@
 				: [],
 			coverBroken: false,
 			artist: raw?.artist,
+			author: raw?.author || raw?.creator || raw?.artist,
+			creator: raw?.creator,
 			kind,
-			// listen_url preferred; zflix_url was an older name, keep both just in case
 			listen_url: raw?.listen_url || raw?.zflix_url,
 			preview_url: raw?.preview_url || raw?.previewUrl || undefined,
 			trailer_youtube_key: raw?.trailer_youtube_key || raw?.trailerYoutubeKey || undefined,
@@ -484,7 +702,18 @@
 					? raw.seasons_label.trim()
 					: typeof raw?.seasonsLabel === 'string' && raw.seasonsLabel.trim()
 						? raw.seasonsLabel.trim()
-						: undefined
+						: undefined,
+			complexity: raw?.complexity ? String(raw.complexity) : undefined,
+			playingTime:
+				typeof raw?.playingTime === 'number'
+					? raw.playingTime
+					: typeof raw?.playing_time === 'number'
+						? raw.playing_time
+						: undefined,
+			vibeLabel: raw?.vibeLabel ? String(raw.vibeLabel) : undefined,
+			watch: raw?.watch ? normalizeRec(raw.watch) : undefined,
+			music: raw?.music ? normalizeRec(raw.music) : undefined,
+			snack: raw?.snack ? normalizeRec(raw.snack) : undefined
 		};
 	}
 
@@ -501,6 +730,7 @@
 			platforms: selectedPlatforms,
 			seriesLength: selectedSeasonCount,
 			region: watchRegion,
+			language: selectedLanguage,
 			notesWeight
 		};
 	}
@@ -516,13 +746,14 @@
 		history.replaceState(history.state, '', next);
 	}
 
+	// dropping a retro terminal toast notification so users actually know when their link was copied
 	function showShareToast(msg: string) {
 		shareToast = msg;
 		if (shareToastTimer) clearTimeout(shareToastTimer);
 		shareToastTimer = setTimeout(() => {
 			shareToast = '';
 			shareToastTimer = null;
-		}, 2200);
+		}, 3000);
 	}
 
 	async function copyVibeLink() {
@@ -533,7 +764,7 @@
 		);
 		try {
 			await navigator.clipboard.writeText(url);
-			showShareToast('Vibe link copied');
+			showShareToast(LINK_COPIED_TOAST);
 			syncVibeUrl();
 		} catch {
 			try {
@@ -546,10 +777,111 @@
 				ta.select();
 				document.execCommand('copy');
 				document.body.removeChild(ta);
-				showShareToast('Vibe link copied');
+				showShareToast(LINK_COPIED_TOAST);
 				syncVibeUrl();
 			} catch {
 				showShareToast('Could not copy link');
+			}
+		}
+	}
+
+	function letterboxdYearFrom(title: string, seasonInfo?: string | null, yearHint?: string | null): string | undefined {
+		const hint = (yearHint || '').trim();
+		if (/^\d{4}$/.test(hint)) return hint;
+		const si = (seasonInfo || '').trim();
+		if (/^\d{4}$/.test(si)) return si;
+		const m = title.match(/\((\d{4})\)\s*$/);
+		return m ? m[1] : undefined;
+	}
+
+	function isLetterboxdMediaKind(kind?: string, mediaType?: string): boolean {
+		if (
+			kind === 'song' ||
+			kind === 'game' ||
+			kind === 'book' ||
+			kind === 'boardgame' ||
+			kind === 'snack' ||
+			kind === 'vibe'
+		)
+			return false;
+		const mt = (mediaType || '').toLowerCase();
+		if (
+			mt === 'song' ||
+			mt === 'game' ||
+			mt === 'book' ||
+			mt === 'manga' ||
+			mt === 'board game' ||
+			mt === 'vibe package'
+		)
+			return false;
+		// media / movie / tv / anime — anything watchable enough for letterboxd
+		return true;
+	}
+
+	function letterboxdPicksFromResults() {
+		const picks: { title: string; year?: string }[] = [];
+		for (const item of results) {
+			if (item.kind === 'vibe' || item.mediaType === 'Vibe Package') {
+				const w = item.watch;
+				if (!w?.title?.trim()) continue;
+				picks.push({
+					title: w.title.trim(),
+					year: letterboxdYearFrom(w.title, w.seasonInfo)
+				});
+				continue;
+			}
+			if (item.kind !== 'media') continue;
+			if (!item.title?.trim()) continue;
+			picks.push({
+				title: item.title.trim(),
+				year: letterboxdYearFrom(item.title, item.seasonInfo)
+			});
+		}
+		return picks;
+	}
+
+	function letterboxdPicksFromAuraList() {
+		return auraList
+			.filter((x) => isLetterboxdMediaKind(x.kind, x.mediaType))
+			.map((x) => ({
+				title: x.title.trim(),
+				year: letterboxdYearFrom(x.title, undefined, x.year)
+			}))
+			.filter((x) => x.title);
+	}
+
+	let letterboxdExportable = $derived(
+		viewMode === 'list' ? letterboxdPicksFromAuraList().length > 0 : letterboxdPicksFromResults().length > 0
+	);
+
+	async function copyLetterboxdList() {
+		if (!session?.user) {
+			showLoginPrompt = true;
+			return;
+		}
+		const picks = viewMode === 'list' ? letterboxdPicksFromAuraList() : letterboxdPicksFromResults();
+		if (!picks.length) {
+			showShareToast('Nothing to export');
+			return;
+		}
+		const md = formatLetterboxdChecklist(picks);
+		try {
+			await navigator.clipboard.writeText(md);
+			showShareToast('Copied for Letterboxd');
+		} catch {
+			try {
+				const ta = document.createElement('textarea');
+				ta.value = md;
+				ta.setAttribute('readonly', '');
+				ta.style.position = 'fixed';
+				ta.style.left = '-9999px';
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand('copy');
+				document.body.removeChild(ta);
+				showShareToast('Copied for Letterboxd');
+			} catch {
+				showShareToast('Could not copy');
 			}
 		}
 	}
@@ -559,8 +891,9 @@
 		if (!parsed) return false;
 
 		if (parsed.types?.length) {
-			selectedTypes = parsed.types.filter((t): t is FormatId =>
-				FORMAT_OPTIONS.some((f) => f.id === t)
+			selectedTypes = parsed.types.filter(
+				(t): t is FormatId =>
+					t === 'fullvibe' || FORMAT_OPTIONS.some((f) => f.id === t)
 			) as FormatId[];
 		}
 		if (parsed.genres?.length) selectedGenres = parsed.genres;
@@ -586,6 +919,7 @@
 			selectedSeasonCount = SERIES_LENGTH_OPTIONS.some((o) => o.id === s) ? s : '';
 		}
 		if (parsed.region) watchRegion = normalizeRegion(parsed.region);
+		if (parsed.language) selectedLanguage = normalizeLanguage(parsed.language);
 		if (parsed.notesWeight != null) notesWeight = parsed.notesWeight;
 		return true;
 	}
@@ -628,25 +962,105 @@
 		return `${weekday}, ${hh}:${mm}`;
 	}
 
-	function applyThemeToDocument(theme: UiTheme) {
-		document.documentElement.dataset.ui = theme;
-		document.body.style.background = theme === 'minimal' ? '#0E0E12' : '#7b8a9d';
-		const meta = document.querySelector('meta[name="theme-color"]');
-		if (meta) meta.setAttribute('content', theme === 'minimal' ? '#0E0E12' : '#7B8A9D');
+
+	function cloudPlaylistsToAura(
+		playlists: Array<{
+			id: string;
+			slug: string;
+			title: string;
+			items: Array<{
+				id: string;
+				title: string;
+				coverUrl?: string | null;
+				format?: string;
+				description?: string | null;
+				providers?: AuraListItem['providers'];
+			}>;
+		}>
+	): AuraListItem[] {
+		const out: AuraListItem[] = [];
+		for (const pl of playlists) {
+			for (const i of pl.items || []) {
+				out.push({
+					id: i.id,
+					title: i.title,
+					cover: i.coverUrl || '',
+					mediaType: i.format || undefined,
+					kind: 'media',
+					pitch: i.description || undefined,
+					providers: i.providers,
+					listId: pl.id,
+					listSlug: pl.slug,
+					listTitle: pl.title,
+					savedAt: Date.now()
+				});
+			}
+		}
+		return out;
 	}
 
-	function setUiTheme(theme: UiTheme) {
-		uiTheme = theme;
+	// when turso playlists land (or we optimistic-save), mirror them into the local vibe list ui
+	$effect(() => {
+		if (!page.data.session?.user) return;
+		auraList = cloudPlaylistsToAura(cloudPlaylists);
+	});
+
+	function recSaveFormat(item: Rec): string {
+		return item.kind === 'snack'
+			? 'media'
+			: String(item.kind || item.mediaType || 'media');
+	}
+
+	function clonePlaylists(list: CloudPlaylistClient[]): CloudPlaylistClient[] {
+		return list.map((p) => ({ ...p, items: p.items.map((i) => ({ ...i })) }));
+	}
+
+	function optimisticAddToPlaylist(listId: string, item: Rec): CloudPlaylistClient[] {
+		const format = recSaveFormat(item);
+		const titleKey = item.title.toLowerCase();
+		return clonePlaylists(cloudPlaylists).map((pl) => {
+			if (pl.id !== listId) return pl;
+			if (pl.items.some((i) => i.title.toLowerCase() === titleKey)) return pl;
+			return {
+				...pl,
+				items: [
+					...pl.items,
+					{
+						id: `opt_${Date.now()}`,
+						title: item.title,
+						coverUrl: item.cover || '',
+						format,
+						description: item.pitch || null,
+						providers: item.providers
+					}
+				]
+			};
+		});
+	}
+
+	function itemIsSaved(item: Rec): boolean {
+		const title = item.title.toLowerCase();
+		return auraList.some((x) => x.title.toLowerCase() === title);
+	}
+
+	function playlistShareUrl(slug: string) {
+		return `${page.url.origin}/list/${slug}`;
+	}
+
+	async function copyPlaylistShare(slug: string) {
+		const url = playlistShareUrl(slug);
 		try {
-			localStorage.setItem(UI_KEY, theme);
+			await navigator.clipboard.writeText(url);
+			showShareToast(LINK_COPIED_TOAST);
 		} catch {
-			/* shrug */
+			showShareToast(url);
 		}
-		applyThemeToDocument(theme);
 	}
 
 	onMount(() => {
-		auraList = loadAuraList();
+		if (!page.data.session?.user) {
+			auraList = loadAuraList();
+		}
 
 		try {
 			const saved = localStorage.getItem(REGION_KEY);
@@ -660,14 +1074,13 @@
 		}
 
 		try {
-			const savedUi = localStorage.getItem(UI_KEY);
-			if (savedUi === 'minimal' || savedUi === 'desktop') {
-				uiTheme = savedUi;
-			}
+			const savedLang = localStorage.getItem(LANG_KEY);
+			if (savedLang) selectedLanguage = normalizeLanguage(savedLang);
 		} catch {
 			/* shrug */
 		}
-		applyThemeToDocument(uiTheme);
+
+		hydrateUiTheme();
 
 		try {
 			const savedZflix = localStorage.getItem(ZFLIX_KEY);
@@ -729,6 +1142,14 @@
 		}
 	}
 
+	function persistLanguage() {
+		try {
+			localStorage.setItem(LANG_KEY, normalizeLanguage(selectedLanguage));
+		} catch {
+			/* shrug */
+		}
+	}
+
 	function setZflixEnabled(next: boolean) {
 		zflixEnabled = next;
 		try {
@@ -739,32 +1160,50 @@
 	}
 
 	function toggleFormat(id: FormatId) {
-		const wasSongs = selectedTypes.length === 1 && selectedTypes[0] === 'songs';
-		const wasGames = selectedTypes.length === 1 && selectedTypes[0] === 'games';
+		const exclusiveIds: FormatId[] = ['songs', 'games', 'books', 'boardgames'];
+		const wasExclusive = exclusiveIds.includes(selectedTypes[0] as FormatId) && selectedTypes.length === 1;
 		let next: FormatId[];
-		if (id === 'songs') next = ['songs'];
-		else if (id === 'games') next = ['games'];
-		else if (wasSongs || wasGames) next = [id];
+		if (exclusiveIds.includes(id)) next = [id];
+		else if (wasExclusive) next = [id];
 		else if (selectedTypes.includes(id)) next = selectedTypes.filter((t) => t !== id);
-		else next = [...selectedTypes, id];
+		else next = [...selectedTypes.filter((t) => t !== 'fullvibe'), id];
 
 		selectedTypes = next;
-		const nowSongs = next.length === 1 && next[0] === 'songs';
-		const nowGames = next.length === 1 && next[0] === 'games';
-		const allowed = nowSongs
-			? GENRES_BY_FORMAT.songs
-			: nowGames
-				? GENRES_BY_FORMAT.games
-				: next.length
-					? [...new Set(next.flatMap((t) => GENRES_BY_FORMAT[t]))]
-					: ALL_MEDIA_GENRES;
+		const nowExclusive = exclusiveIds.includes(next[0] as FormatId) && next.length === 1;
+		const allowed = nowExclusive && next[0] !== 'fullvibe'
+			? GENRES_BY_FORMAT[next[0] as ChipFormatId] || ALL_MEDIA_GENRES
+			: next.length
+				? [
+						...new Set(
+							next.flatMap((t) =>
+								t === 'fullvibe' ? ALL_MEDIA_GENRES : GENRES_BY_FORMAT[t] || []
+							)
+						)
+					]
+				: ALL_MEDIA_GENRES;
 		selectedGenres = selectedGenres.filter((g) => allowed.includes(g));
-		if (wasSongs !== nowSongs || wasGames !== nowGames) likeTitles = [];
-		if (wasGames && !nowGames) {
+		if (wasExclusive !== nowExclusive || (wasExclusive && selectedTypes[0] !== next[0])) {
+			likeTitles = [];
+		}
+		if (selectedTypes[0] !== 'games') {
 			selectedPriceRange = '';
 			selectedPlatforms = [];
 		}
 		if (!next.includes('series')) selectedSeasonCount = '';
+	}
+
+	function runFullVibe() {
+		// glowing pill toggle — don't auto-fire, just flip into wildcard mode
+		if (isFullVibe) {
+			selectedTypes = [];
+			return;
+		}
+		selectedTypes = ['fullvibe'];
+		likeTitles = [];
+		selectedPriceRange = '';
+		selectedPlatforms = [];
+		selectedSeasonCount = '';
+		selectedMaturity = '';
 	}
 
 	function toggleGenre(g: string) {
@@ -784,8 +1223,19 @@
 			return;
 		}
 
+		// don't hit the api while tabletop is parked behind the bgg gate
+		if (boardGamesSoon) {
+			errMsg = BOARD_GAMES_SOON_COPY.body;
+			showShareToast(BOARD_GAMES_SOON_COPY.title);
+			return;
+		}
+
 		isLoading = true;
 		playingPreview = null;
+		vibeMissed = false;
+		// forcefully flipping the tab back to 'match' when they hit get picks so they aren't staring at their old lists wondering where the new stuff went
+		viewMode = 'match';
+		mobilePane = 'match';
 
 		try {
 			const res = await fetch('/api/recommend', {
@@ -799,6 +1249,7 @@
 					likeTitles: likeTitles.length ? likeTitles : undefined,
 					notesWeight,
 					region: watchRegion,
+					language: selectedLanguage,
 					decade: selectedDecade || undefined,
 					maturity: selectedMaturity || undefined,
 					priceRange: selectedPriceRange || undefined,
@@ -810,6 +1261,8 @@
 			const data = await res.json().catch(() => ({}));
 
 			if (!res.ok) {
+				results = [];
+				vibeMissed = true;
 				errMsg = data?.message || data?.error || `request failed (${res.status})`;
 				isLoading = false;
 				return;
@@ -822,13 +1275,35 @@
 						? [data.recommendation]
 						: [];
 			results = list.map((raw: Record<string, any>) => normalizeRec(raw));
+			vibeMissed = results.length === 0;
+			fabSaveIndex = 0;
 			syncVibeUrl();
 		} catch (err: any) {
 			console.log('oops', err);
+			results = [];
+			vibeMissed = true;
 			errMsg = err?.message || 'something went sideways';
 		} finally {
 			isLoading = false;
 		}
+	}
+
+	function resetVibeFilters() {
+		selectedGenres = [];
+		vibePrompt = '';
+		antiVibe = '';
+		likeTitles = [];
+		selectedDecade = '';
+		selectedMaturity = '';
+		selectedPriceRange = '';
+		selectedPlatforms = [];
+		selectedSeasonCount = '';
+		notesWeight = NOTES_WEIGHT_DEFAULT;
+		vibeMissed = false;
+		results = [];
+		errMsg = '';
+		mobilePane = 'vibe';
+		syncVibeUrl();
 	}
 
 	function onKeyDown(ev: KeyboardEvent) {
@@ -839,8 +1314,15 @@
 	}
 
 	async function surpriseMe() {
+		// surprise me still shouldn't fire board game rolls until the token lands
+		if (boardGamesSoon) {
+			errMsg = BOARD_GAMES_SOON_COPY.body;
+			showShareToast(BOARD_GAMES_SOON_COPY.title);
+			return;
+		}
 		const roll = rollSurpriseMe(selectedTypes);
 		viewMode = 'match';
+		mobilePane = 'match';
 		// Keep Format as-is — Surprise Me only randomizes vibe / light filters
 		vibePrompt = roll.vibe;
 		selectedGenres = roll.genres ? [...roll.genres] : [];
@@ -853,27 +1335,182 @@
 		await findMyVibe();
 	}
 
-	function toggleSave(item: Rec) {
-		const id = makeId(item.title, item.mediaType, item.artist);
-		const wasOn = isOnAuraList(auraList, id);
-		auraList = toggleAuraListItem(auraList, {
-			id,
-			title: item.title,
-			cover: item.cover || '',
-			year: item.seasonInfo || undefined,
-			mediaType: item.mediaType,
-			kind: item.kind || (item.mediaType === 'Song' ? 'song' : undefined),
-			artist: item.artist,
-			pitch: item.pitch
-		});
-		saveAuraList(auraList);
-		showShareToast(wasOn ? 'Removed from My List' : 'Saved to My List');
+	async function toggleSave(item: Rec) {
+		// guest? bounce them to login instead of stuffing localStorage forever
+		if (!session?.user) {
+			showLoginPrompt = true;
+			return;
+		}
+		if (saveBusy) return;
+
+		const wasOn = itemIsSaved(item);
+		if (wasOn) {
+			// already saved somewhere — yank matching titles across playlists
+			saveBusy = true;
+			const matches = auraList.filter((x) => x.title.toLowerCase() === item.title.toLowerCase());
+			try {
+				for (const m of matches) {
+					const fd = new FormData();
+					fd.set('itemId', m.id);
+					await fetch('?/removeItem', { method: 'POST', body: fd });
+				}
+				showShareToast('Removed from playlists');
+				await invalidateAll();
+			} catch (e) {
+				console.warn('cloud remove flopped', e);
+				showShareToast('Couldn’t sync — try again');
+			} finally {
+				saveBusy = false;
+			}
+			return;
+		}
+
+		// open playlist picker instead of dumping into one big pile
+		savePickerItem = item;
+		newPlaylistTitle = '';
 	}
 
-	function removeAuraItem(id: string) {
-		auraList = auraList.filter((x) => x.id !== id);
-		saveAuraList(auraList);
-		showShareToast('Removed from My List');
+	async function saveToPlaylist(listId: string) {
+		const item = savePickerItem;
+		if (!item || !session?.user || saveBusy) return;
+		saveBusy = true;
+		savingListId = listId;
+
+		const format = recSaveFormat(item);
+		const fd = new FormData();
+		fd.set('title', item.title);
+		fd.set('format', String(format));
+		fd.set('coverUrl', item.cover || '');
+		fd.set('description', item.pitch || '');
+		fd.set('listId', listId);
+		if (item.providers?.length) {
+			fd.set('providers', JSON.stringify(item.providers));
+		}
+
+		// slam the modal shut before turso roundtrips so save doesn't feel like dial-up
+		const prevOverride = playlistOverride;
+		playlistOverride = optimisticAddToPlaylist(listId, item);
+		savePickerItem = null;
+		showShareToast('Saved to playlist');
+
+		try {
+			const res = await fetch('?/saveItem', { method: 'POST', body: fd });
+			const result = deserialize(await res.text());
+			if (result.type !== 'success') throw new Error('save failed');
+			await invalidateAll();
+			playlistOverride = null;
+		} catch (e) {
+			console.warn('cloud save flopped', e);
+			playlistOverride = prevOverride;
+			showShareToast('Couldn’t sync — try again');
+			savePickerItem = item;
+		} finally {
+			saveBusy = false;
+			savingListId = null;
+		}
+	}
+
+	async function createPlaylistAndMaybeSave() {
+		if (!session?.user || playlistBusy) return;
+		const title = newPlaylistTitle.trim();
+		if (!title) {
+			showShareToast('Name your playlist first');
+			return;
+		}
+		playlistBusy = true;
+		const fd = new FormData();
+		fd.set('title', title);
+		try {
+			const res = await fetch('?/createPlaylist', { method: 'POST', body: fd });
+			const result = deserialize(await res.text());
+			if (result.type !== 'success') throw new Error('create failed');
+			const created = result.data as
+				| { listId?: string; slug?: string; title?: string }
+				| undefined;
+			const listId = created?.listId;
+			newPlaylistTitle = '';
+			showShareToast('Playlist created');
+			if (savePickerItem && listId) {
+				playlistOverride = [
+					...clonePlaylists(cloudPlaylists),
+					{
+						id: listId,
+						slug: created?.slug || listId,
+						title: created?.title || title,
+						items: []
+					}
+				];
+				playlistBusy = false;
+				await saveToPlaylist(listId);
+				return;
+			}
+			await invalidateAll();
+		} catch (e) {
+			console.warn('create playlist flopped', e);
+			showShareToast('Couldn’t create playlist');
+		} finally {
+			playlistBusy = false;
+		}
+	}
+
+	async function createPlaylistOnly() {
+		if (!session?.user || playlistBusy) return;
+		const title = newPlaylistTitle.trim();
+		if (!title) {
+			showShareToast('Name your playlist first');
+			return;
+		}
+		playlistBusy = true;
+		const fd = new FormData();
+		fd.set('title', title);
+		try {
+			const res = await fetch('?/createPlaylist', { method: 'POST', body: fd });
+			const result = deserialize(await res.text());
+			if (result.type !== 'success') throw new Error('create failed');
+			newPlaylistTitle = '';
+			showShareToast('Playlist created');
+			await invalidateAll();
+		} catch (e) {
+			console.warn('create playlist flopped', e);
+			showShareToast('Couldn’t create playlist');
+		} finally {
+			playlistBusy = false;
+		}
+	}
+
+	let fabItem = $derived.by(() => {
+		if (!results.length) return null;
+		const i = Math.min(Math.max(fabSaveIndex, 0), results.length - 1);
+		return results[i] || results[0] || null;
+	});
+
+	let fabIsSaved = $derived.by(() => {
+		const item = fabItem;
+		if (!item) return false;
+		return itemIsSaved(item);
+	});
+
+	function toggleFabSave() {
+		if (!fabItem) return;
+		void toggleSave(fabItem);
+	}
+
+	async function removeAuraItem(id: string) {
+		if (!session?.user) {
+			auraList = auraList.filter((x) => x.id !== id);
+			saveAuraList(auraList);
+			showShareToast('Removed from My List');
+			return;
+		}
+		const fd = new FormData();
+		fd.set('itemId', id);
+		try {
+			await fetch('?/removeItem', { method: 'POST', body: fd });
+			await invalidateAll();
+			showShareToast('Removed from playlist');
+		} catch {
+			showShareToast('Couldn’t remove — try again');
+		}
 	}
 
 	function formatRating(n: number) {
@@ -892,13 +1529,17 @@
 
 {#snippet formFields()}
 	<form class="vibe-form" onsubmit={findMyVibe}>
+		<!-- adding bottom padding to the form so users can actually scroll down to the bottom inputs -->
+		<div class="form-stack max-lg:pb-32">
 		<div class="field">
 			<span class="field-label" id="format-label">Format</span>
-			<div class="segment format-segment" role="group" aria-labelledby="format-label">
+			<!-- nuking the grid layout for flex pills because that empty square was driving me crazy -->
+			<!-- ripping off the coming soon badge because board games are officially live -->
+			<div class="format-pills" role="group" aria-labelledby="format-label">
 				{#each FORMAT_OPTIONS as opt (opt.id)}
 					<button
 						type="button"
-						class="segment-btn"
+						class="format-pill"
 						class:active={selectedTypes.includes(opt.id)}
 						aria-pressed={selectedTypes.includes(opt.id)}
 						onclick={() => toggleFormat(opt.id)}
@@ -907,80 +1548,96 @@
 						{opt.label}
 					</button>
 				{/each}
+				<button
+					type="button"
+					class="format-pill full-vibe-pill"
+					class:active={isFullVibe}
+					aria-pressed={isFullVibe}
+					disabled={isLoading}
+					onclick={() => runFullVibe()}
+					title="Movie/show + music + snack for one vibe"
+				>
+					Full Vibe
+				</button>
 			</div>
+			{#if isFullVibe}
+				<p class="field-hint">Wildcard mode — movie/show + music + snack for one vibe</p>
+			{:else if boardGamesSoon}
+				<p class="field-hint">{BOARD_GAMES_SOON_COPY.eyebrow} — picks stay parked until review clears</p>
+			{/if}
 		</div>
 
+		<!-- tucking the massive genre list into an accordion so it doesn't eat the whole screen -->
 		<div class="field">
-			<span class="field-label" id="genre-label">Genres</span>
-			<div class="genre-grid" role="group" aria-labelledby="genre-label">
-				{#each visibleGenres as g (g)}
-					<button
-						type="button"
-						class="genre-toggle"
-						class:active={selectedGenres.includes(g)}
-						aria-pressed={selectedGenres.includes(g)}
-						onclick={() => toggleGenre(g)}
-						disabled={isLoading}
-					>
-						<span class="genre-mark" aria-hidden="true"></span>
-						{g}
-					</button>
-				{/each}
-			</div>
+			<details class="genre-acc">
+				<summary class="genre-acc-summary">
+					Show Genres
+					{#if selectedGenres.length}
+						<span class="genre-acc-count">{selectedGenres.length}</span>
+					{/if}
+				</summary>
+				<span class="field-label genre-acc-desk-label" id="genre-label">Genres</span>
+				<div class="genre-grid" role="group" aria-labelledby="genre-label">
+					{#each visibleGenres as g (g)}
+						<button
+							type="button"
+							class="genre-toggle"
+							class:active={selectedGenres.includes(g)}
+							aria-pressed={selectedGenres.includes(g)}
+							onclick={() => toggleGenre(g)}
+							disabled={isLoading}
+						>
+							<span class="genre-mark" aria-hidden="true"></span>
+							{g}
+						</button>
+					{/each}
+				</div>
+			</details>
 		</div>
 
-		<div class="field">
-			<label class="field-label" for="like-title">
-				{isGames ? 'Like these games' : isSongs ? 'Like these' : 'Like these titles'}
-				<span class="optional">(optional)</span>
-			</label>
-			<LikeTitleSelect
-				id="like-title"
-				bind:values={likeTitles}
-				disabled={isLoading}
-				variant={uiTheme === 'desktop' ? 'desktop' : 'dark'}
-				kind={isGames ? 'games' : isSongs ? 'music' : 'media'}
-			/>
-			<p class="field-hint">
-				{isGames
-					? 'Add games — find titles in the same vibe'
-					: isSongs
-						? 'Add songs or artists — find tracks in the same vibe'
-						: 'Add one or more — find something in the same vein'}
-			</p>
-		</div>
-
-		<div class="field">
-			<span class="field-label" id="maturity-label">Content rating</span>
-			<div class="segment maturity-segment" role="group" aria-labelledby="maturity-label">
-				{#each MATURITY_OPTIONS as opt (opt.id || 'any')}
-					{@const certs = isGames
-						? opt.gameCerts
-						: isSongs
-							? opt.songCerts
-							: opt.mediaCerts}
-					<button
-						type="button"
-						class="segment-btn maturity-btn"
-						class:active={selectedMaturity === opt.id}
-						aria-pressed={selectedMaturity === opt.id}
-						aria-label="{opt.label}, {certs}"
-						onclick={() => (selectedMaturity = opt.id)}
-						disabled={isLoading}
-					>
-						<span class="maturity-label">{opt.label}</span>
-						<span class="maturity-certs">{certs}</span>
-					</button>
-				{/each}
+		{#if !isFullVibe}
+			<div class="field">
+				<label class="field-label" for="like-title">
+					{isGames
+						? 'Like these games'
+						: isBoardGames
+							? 'Like these board games'
+							: isBooks
+								? 'Like these books'
+								: isSongs
+									? 'Like these'
+									: 'Like these titles'}
+					<span class="optional">(optional)</span>
+				</label>
+				<LikeTitleSelect
+					id="like-title"
+					bind:values={likeTitles}
+					disabled={isLoading}
+					variant={uiTheme === 'desktop' ? 'desktop' : 'dark'}
+					kind={isGames
+						? 'games'
+						: isBoardGames
+							? 'boardgames'
+							: isBooks
+								? 'books'
+								: isSongs
+									? 'music'
+									: 'media'}
+					language={selectedLanguage}
+				/>
+				<p class="field-hint">
+					{isGames
+						? 'Add games — find titles in the same vibe'
+						: isBoardGames
+							? 'Add tabletop titles — find games in the same vibe'
+							: isBooks
+								? 'Add books or manga — find neighbors in tone'
+								: isSongs
+									? 'Add songs or artists — find tracks in the same vibe'
+									: 'Add one or more — find something in the same vein'}
+				</p>
 			</div>
-			<p class="field-hint">
-				{isGames
-					? 'Shown on picks as ESRB / PEGI badges.'
-					: isSongs
-						? 'Steers the model — songs have no formal certs.'
-						: 'Shown on picks as TMDB age badges (G, PG-13, R…).'}
-			</p>
-		</div>
+		{/if}
 
 		{#if isGames}
 			<div class="field">
@@ -1048,7 +1705,7 @@
 			</div>
 		{/if}
 
-		{#if !isSongs && !isGames}
+		{#if isMediaLane}
 			<div class="field region-field">
 				<label class="field-label" for="region">Streaming region</label>
 				<RegionSelect
@@ -1060,25 +1717,6 @@
 				/>
 				<p class="field-hint">Used for Where to Watch providers</p>
 			</div>
-			<label class="field zflix-switch-row">
-				<span class="zflix-switch-copy">
-					<span class="field-label">ZFlix links</span>
-					<span class="field-hint"
-						>Show Watch on Zflix buttons on results. Warning: ZFlix may show weird ads.</span
-					>
-				</span>
-				<button
-					type="button"
-					class="zflix-switch"
-					class:on={zflixEnabled}
-					role="switch"
-					aria-checked={zflixEnabled}
-					disabled={isLoading}
-					onclick={() => setZflixEnabled(!zflixEnabled)}
-				>
-					<span class="zflix-switch-thumb" aria-hidden="true"></span>
-				</button>
-			</label>
 		{/if}
 
 		<div class="field">
@@ -1090,11 +1728,17 @@
 				class="vibe-input"
 				bind:value={vibePrompt}
 				onkeydown={onKeyDown}
-				placeholder={isGames
-					? 'competitive tactical shooter, cozy farming, deep crafting…'
-					: isSongs
-						? 'late night drive, soft vocals, no pop…'
-						: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
+				placeholder={isFullVibe
+					? 'rainy sunday cozy, neon date night, slow morning…'
+					: isBoardGames
+						? 'cozy 2-player engine builder, loud party game…'
+						: isBooks
+							? 'quiet fantasy, bingeable manga, literary thriller…'
+							: isGames
+								? 'competitive tactical shooter, cozy farming, deep crafting…'
+								: isSongs
+									? 'late night drive, soft vocals, no pop…'
+									: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
 				rows="3"
 				disabled={isLoading}
 			></textarea>
@@ -1181,18 +1825,93 @@
 							: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
 					</p>
 				</div>
+
+				{#if isMediaLane}
+					<div class="field">
+						<span class="field-label" id="maturity-label">Content rating</span>
+						<div
+							class="segment maturity-segment"
+							role="group"
+							aria-labelledby="maturity-label"
+						>
+							{#each MATURITY_OPTIONS as opt (opt.id || 'any')}
+								{@const certs = opt.mediaCerts}
+								<button
+									type="button"
+									class="segment-btn maturity-btn"
+									class:active={selectedMaturity === opt.id}
+									aria-pressed={selectedMaturity === opt.id}
+									aria-label="{opt.label}, {certs}"
+									onclick={() => (selectedMaturity = opt.id)}
+									disabled={isLoading}
+								>
+									<span class="maturity-label">{opt.label}</span>
+									<span class="maturity-certs">{certs}</span>
+								</button>
+							{/each}
+						</div>
+						<p class="field-hint">Shown on picks as TMDB age badges (G, PG-13, R…).</p>
+					</div>
+
+					<div class="field language-field">
+						<label class="field-label" for="language">Language</label>
+						<select
+							id="language"
+							class="lang-select"
+							bind:value={selectedLanguage}
+							onchange={persistLanguage}
+							disabled={isLoading}
+						>
+							{#each CONTENT_LANGUAGES as lang (lang.code)}
+								<option value={lang.code}>{lang.label}</option>
+							{/each}
+						</select>
+						<p class="field-hint">Titles & descriptions from TMDB in this language</p>
+					</div>
+
+					<!-- stashed under advanced so the main form stays cleaner -->
+					<label class="field zflix-switch-row">
+						<span class="zflix-switch-copy">
+							<span class="field-label">ZFlix links</span>
+							<span class="field-hint"
+								>Show Watch on Zflix buttons on results. Warning: ZFlix may show weird ads.</span
+							>
+						</span>
+						<button
+							type="button"
+							class="zflix-switch"
+							class:on={zflixEnabled}
+							role="switch"
+							aria-checked={zflixEnabled}
+							aria-label={zflixEnabled ? 'Disable ZFlix links' : 'Enable ZFlix links'}
+							disabled={isLoading}
+							onclick={() => setZflixEnabled(!zflixEnabled)}
+						>
+							<span class="zflix-switch-thumb" aria-hidden="true"></span>
+						</button>
+					</label>
+				{/if}
 			</div>
 		{/if}
 
-		<div class="cta-row">
-			<button class="cta" type="submit" disabled={isLoading || !canSubmit}>
+		</div>
+
+		<!-- swapping the glitchy gradient for a solid background so the buttons don't bleed into the text -->
+		<div
+			class="cta-row max-lg:sticky max-lg:bottom-[80px] max-lg:z-20 max-lg:border-t max-lg:border-black/10 max-lg:bg-[var(--window,var(--bg,#ffffff))] max-lg:pt-4 max-lg:pb-4"
+		>
+			<button class="cta" type="submit" disabled={isLoading || !canSubmit || boardGamesSoon}>
 				{#if isLoading}
 					<span class="spinner" aria-hidden="true"></span>
 					{uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
+				{:else if boardGamesSoon}
+					{uiTheme === 'minimal' ? 'Coming soon' : 'coming soon'}
 				{:else if isSongs}
 					{uiTheme === 'minimal' ? 'Get song picks' : 'get song picks'}
 				{:else if isGames}
 					{uiTheme === 'minimal' ? 'Get game picks' : 'get game picks'}
+				{:else if isBoardGames}
+					{uiTheme === 'minimal' ? 'Get board game picks' : 'get board game picks'}
 				{:else}
 					{uiTheme === 'minimal' ? 'Get picks' : 'get picks'}
 				{/if}
@@ -1200,7 +1919,7 @@
 			<button
 				type="button"
 				class="cta cta-surprise"
-				disabled={isLoading}
+				disabled={isLoading || boardGamesSoon}
 				onclick={() => void surpriseMe()}
 			>
 				{uiTheme === 'minimal' ? 'Surprise me' : 'surprise me'}
@@ -1215,47 +1934,106 @@
 
 {#snippet resultContent()}
 	{#if viewMode === 'list'}
-		{#if auraList.length}
-			<div class="aura-list" in:fly={{ y: 8, duration: 280, easing: quintOut }} out:fade={{ duration: 140 }}>
-				<p class="rec-list-header">{auraList.length} saved</p>
-				{#each auraList as saved (saved.id)}
-					<article class="aura-list-card">
-						<div class="aura-list-cover">
-							{#if saved.cover}
-								<img src={saved.cover} alt="" class="cover" loading="lazy" decoding="async" />
-							{:else}
-								<div
-									class="cover-fallback"
-									style={coverFallbackStyle(saved.artist ? `${saved.artist} ${saved.title}` : saved.title)}
-									aria-hidden="true"
-								>
-									<span class="cover-fallback-initials">
-										{mediaInitials(saved.title, saved.artist)}
-									</span>
-								</div>
-							{/if}
-						</div>
-						<div class="aura-list-meta">
-							<h2 class="rec-title">{saved.title}</h2>
-							{#if saved.year}
-								<p class="meta-line">{saved.year}</p>
-							{/if}
-							<button
-								type="button"
-								class="aura-list-remove"
-								onclick={() => removeAuraItem(saved.id)}
-							>
-								Remove
-							</button>
-						</div>
-					</article>
-				{/each}
+		<div class="aura-list" in:fly={{ y: 8, duration: 280, easing: quintOut }} out:fade={{ duration: 140 }}>
+			<div class="rec-list-toolbar">
+				<p class="rec-list-header">
+					{totalSavedCount || auraList.length} saved · {cloudPlaylists.length || 1} playlist{(cloudPlaylists.length || 1) === 1
+						? ''
+						: 's'}
+				</p>
+				{#if session?.user && letterboxdExportable}
+					<button type="button" class="share-vibe-btn" onclick={() => void copyLetterboxdList()}>
+						Letterboxd
+					</button>
+				{/if}
 			</div>
-		{:else}
-			<p class="empty-state" transition:fade={{ duration: 220 }}>
-				Nothing saved yet — tap ★ on a pick.
-			</p>
-		{/if}
+
+			{#if session?.user}
+				<div class="playlist-create">
+					<input
+						class="playlist-input"
+						type="text"
+						placeholder="New playlist name…"
+						bind:value={newPlaylistTitle}
+						disabled={playlistBusy}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') {
+								e.preventDefault();
+								void createPlaylistOnly();
+							}
+						}}
+					/>
+					<button
+						type="button"
+						class="share-vibe-btn"
+						disabled={playlistBusy || !newPlaylistTitle.trim()}
+						onclick={() => void createPlaylistOnly()}
+					>
+						Create
+					</button>
+				</div>
+			{/if}
+
+			{#if cloudPlaylists.length}
+				{#each cloudPlaylists as pl (pl.id)}
+					<section class="playlist-group">
+						<div class="playlist-head">
+							<h3 class="playlist-title">{pl.title}</h3>
+							<div class="rec-list-actions">
+								<span class="playlist-count">{pl.items.length}</span>
+								<button
+									type="button"
+									class="share-vibe-btn"
+									onclick={() => void copyPlaylistShare(pl.slug)}
+								>
+									Share
+								</button>
+							</div>
+						</div>
+						{#if pl.items.length}
+							{#each pl.items as saved (saved.id)}
+								<SavedListCard
+									variant={uiTheme}
+									showRemove
+									item={{
+										id: saved.id,
+										title: saved.title,
+										cover: saved.coverUrl || '',
+										format: saved.format,
+										description: saved.description || undefined,
+										providers: saved.providers
+									}}
+									onRemove={() => removeAuraItem(saved.id)}
+								/>
+							{/each}
+						{:else}
+							<p class="empty-state playlist-empty">Nothing in this playlist yet.</p>
+						{/if}
+					</section>
+				{/each}
+			{:else if auraList.length}
+				{#each auraList as saved (saved.id)}
+					<SavedListCard
+						variant={uiTheme}
+						showRemove
+						item={{
+							id: saved.id,
+							title: saved.title,
+							cover: saved.cover,
+							format: saved.mediaType,
+							year: saved.year,
+							description: saved.pitch,
+							providers: saved.providers
+						}}
+						onRemove={() => removeAuraItem(saved.id)}
+					/>
+				{/each}
+			{:else}
+				<p class="empty-state">
+					Nothing saved yet — hit Save on a pick and choose a playlist.
+				</p>
+			{/if}
+		</div>
 	{:else if isLoading && !results.length}
 		<div class="loading-block" transition:fade={{ duration: 250 }}>
 			<DesktopLoading
@@ -1295,41 +2073,156 @@
 		>
 			<div class="rec-list-toolbar">
 				<p class="rec-list-header">{results.length} picks</p>
-				<button
-					type="button"
-					class="share-vibe-btn"
-					onclick={() => void copyVibeLink()}
-					disabled={isLoading}
-				>
-					Copy link
-				</button>
+				<div class="rec-list-actions">
+					{#if session?.user && letterboxdExportable}
+						<button
+							type="button"
+							class="share-vibe-btn"
+							onclick={() => void copyLetterboxdList()}
+							disabled={isLoading}
+						>
+							Letterboxd
+						</button>
+					{/if}
+					<button
+						type="button"
+						class="share-vibe-btn"
+						onclick={() => void copyVibeLink()}
+						disabled={isLoading}
+					>
+						Copy link
+					</button>
+				</div>
 			</div>
 			{#each results as item, i (item.title + String(i))}
 				{@const genres = itemGenres(item)}
 				{@const meta = itemMetaLine(item)}
 				{@const song = isSongRec(item)}
 				{@const game = isGameRec(item)}
+				{@const book = isBookRec(item)}
+				{@const board = isBoardRec(item)}
+				{@const vibe = isVibeRec(item)}
 				{@const priceBadge = game ? priceBadgeLabel(item) : undefined}
-				{@const saveId = makeId(item.title, item.mediaType, item.artist)}
-				{@const saved = isOnAuraList(auraList, saveId)}
+				{@const saved = itemIsSaved(item)}
 				<article
 					class="rec-card"
+					class:vibe-package={vibe}
 					{@attach uiTheme === 'desktop' && desktopCardEntrance(i)}
+					onpointerenter={() => (fabSaveIndex = i)}
+					onfocusin={() => (fabSaveIndex = i)}
 				>
+					{#if vibe && item.watch && item.music && item.snack}
+						<!-- cohesive night-in package card -->
+						<div class="vibe-pack">
+							<div class="vibe-pack-head">
+								<p class="rec-label">{likeLabel(item)}</p>
+								<div class="rec-title-row">
+									<h2 class="rec-title">{item.vibeLabel || item.title}</h2>
+									<button
+										type="button"
+										class="save-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
+										class:saved
+										aria-label={saved ? 'Remove from My List' : 'Save to My List'}
+										aria-pressed={saved}
+										onclick={() => {
+											fabSaveIndex = i;
+											toggleSave(item);
+										}}
+									>
+										<span class="save-btn-icon" aria-hidden="true">{saved ? '★' : '☆'}</span>
+										<span class="save-btn-label">{saved ? 'Saved' : 'Save'}</span>
+									</button>
+								</div>
+								<p class="rec-pitch">{item.pitch}</p>
+							</div>
+							<div class="vibe-pack-grid">
+								<section class="vibe-slot">
+									<p class="vibe-slot-label">Watch</p>
+									{#if showCoverImg(item.watch)}
+										<img class="vibe-slot-cover" src={item.watch.cover} alt="" loading="lazy" />
+									{/if}
+									<h3 class="vibe-slot-title">{item.watch.title}</h3>
+									<p class="vibe-slot-pitch">{item.watch.pitch}</p>
+									{#if item.watch.watchLink || item.watch.providers?.length}
+										<a
+											class="watch-cta"
+											href={item.watch.watchLink || item.watch.providers?.find((p) => p.url)?.url || '#'}
+											target="_blank"
+											rel="noopener noreferrer">Where to watch</a
+										>
+									{/if}
+								</section>
+								<section class="vibe-slot">
+									<p class="vibe-slot-label">Listen</p>
+									{#if showCoverImg(item.music)}
+										<img
+											class="vibe-slot-cover vibe-slot-cover-sq"
+											src={item.music.cover}
+											alt=""
+											loading="lazy"
+										/>
+									{/if}
+									<h3 class="vibe-slot-title">{item.music.title}</h3>
+									{#if item.music.artist}
+										<p class="rec-artist">{item.music.artist}</p>
+									{/if}
+									<p class="vibe-slot-pitch">{item.music.pitch}</p>
+									{#if item.music.preview_url}
+										<audio class="media-preview audio-preview" controls preload="none" src={item.music.preview_url}
+										></audio>
+									{/if}
+									<a
+										class="watch-cta"
+										href={primaryListenUrl(item.music)}
+										target="_blank"
+										rel="noopener noreferrer">Open listen link</a
+									>
+								</section>
+								<section class="vibe-slot">
+									<p class="vibe-slot-label">{item.snack.mediaType || 'Snack'}</p>
+									{#if showCoverImg(item.snack)}
+										<img class="vibe-slot-cover vibe-slot-cover-sq" src={item.snack.cover} alt="" loading="lazy" />
+									{/if}
+									<h3 class="vibe-slot-title">{item.snack.title}</h3>
+									<p class="vibe-slot-pitch">{item.snack.pitch}</p>
+									{#if item.snack.watchLink}
+										<a
+											class="watch-cta"
+											href={item.snack.watchLink}
+											target="_blank"
+											rel="noopener noreferrer">Recipe</a
+										>
+									{/if}
+								</section>
+							</div>
+						</div>
+					{:else}
 					<div class="rec-grid">
-						<div class="cover-wrap" class:cover-square={song}>
+						<div class="cover-wrap aspect-[2/3]" class:cover-square={song}>
 							{#if showCoverImg(item)}
+								<!-- swapping ugly alt-text boxes with clean skeleton loaders while posters load in -->
+								{#if !loadedCovers.has(item.cover)}
+									<div
+										class="cover-skel animate-pulse bg-zinc-200 dark:bg-zinc-800 border-2 border-black aspect-[2/3]"
+										class:cover-square={song}
+										aria-hidden="true"
+									></div>
+								{/if}
 								<img
 									src={item.cover}
-									alt={song
-										? `${item.artist || ''} — ${item.title} album art`.trim()
-										: `${item.title} cover`}
+									alt=""
 									class="cover"
+									class:cover-in={loadedCovers.has(item.cover)}
 									class:cover-square={song}
 									loading="lazy"
 									decoding="async"
 									referrerpolicy="no-referrer"
+									onload={() => markCoverLoaded(item.cover)}
 									onerror={() => onCoverError(i)}
+									{@attach (node) => {
+										const img = node as HTMLImageElement;
+										if (img.complete && img.naturalWidth > 0) markCoverLoaded(item.cover);
+									}}
 								/>
 							{:else}
 								<div
@@ -1356,18 +2249,25 @@
 								{#if priceBadge}
 									<span class="age-badge price-badge" title="Price range">{priceBadge}</span>
 								{/if}
+								{#if item.complexity && board}
+									<span class="age-badge" title="Complexity">{item.complexity}</span>
+								{/if}
 								<button
 									type="button"
-									class="save-btn"
+									class="save-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
 									class:saved
-									aria-label="Save to My List"
+									aria-label={saved ? 'Remove from My List' : 'Save to My List'}
 									aria-pressed={saved}
-									onclick={() => toggleSave(item)}
+									onclick={() => {
+										fabSaveIndex = i;
+										toggleSave(item);
+									}}
 								>
-									{saved ? '★' : '☆'}
+									<span class="save-btn-icon" aria-hidden="true">{saved ? '★' : '☆'}</span>
+									<span class="save-btn-label">{saved ? 'Saved' : 'Save'}</span>
 								</button>
 							</div>
-							{#if song && item.artist}
+							{#if (song || book) && item.artist}
 								<p class="rec-artist">{item.artist}</p>
 							{/if}
 
@@ -1390,7 +2290,7 @@
 									preload="none"
 									src={item.preview_url}
 								></audio>
-							{:else if !song && !game && item.trailer_youtube_key}
+							{:else if !song && !game && !book && !board && item.trailer_youtube_key}
 								{#if playingPreview === previewKey(item, i)}
 									<div class="trailer-wrap">
 										<iframe
@@ -1402,7 +2302,7 @@
 										></iframe>
 										<button
 											type="button"
-											class="preview-btn preview-close"
+											class="preview-btn preview-close max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
 											onclick={() => toggleTrailer(item, i)}
 										>
 											Close video
@@ -1411,7 +2311,7 @@
 								{:else}
 									<button
 										type="button"
-										class="preview-btn"
+										class="preview-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
 										onclick={() => toggleTrailer(item, i)}
 									>
 										{item.mediaType === 'YouTube' ? 'Play video' : 'Play trailer'}
@@ -1419,40 +2319,36 @@
 								{/if}
 							{/if}
 
-							{#if game}
+							{#if game || board}
 								{@const platforms = item.platforms?.filter(Boolean) ?? []}
 								{@const links = gameStoreLinks(item)}
-								{#if platforms.length || links.length}
-									<div class="where-watch">
-										<div class="watch-heading">
-											<span class="watch-label">Playable on</span>
-										</div>
-										{#if platforms.length}
-											<p class="game-platform-line">{platforms.join(', ')}</p>
-										{/if}
-										{#if platforms.length && links.length}
-											<div class="game-store-sep" aria-hidden="true"></div>
-										{/if}
-										{#if links.length}
-											<div class="game-cta-row flex flex-wrap gap-2">
-												{#each links as link (link.url + link.platform)}
-													<a
-														class="zflix-cta"
-														href={link.url}
-														target="_blank"
-														rel="external noopener noreferrer"
-													>
-														{storeCtaLabel(link)}
-													</a>
-												{/each}
-											</div>
-										{/if}
+								<div class="where-watch">
+									<div class="watch-heading">
+										<span class="watch-label">{board ? 'Tabletop' : 'Playable on'}</span>
 									</div>
-								{/if}
+									{#if platforms.length}
+										<p class="game-platform-line">{platforms.join(', ')}</p>
+										<div class="game-store-sep" aria-hidden="true"></div>
+									{/if}
+									<div class="game-cta-row flex flex-wrap gap-2">
+										{#each links as link (link.url + link.platform)}
+											<a
+												class="zflix-cta"
+												href={link.url}
+												target="_blank"
+												rel="noopener noreferrer"
+											>
+												{storeCtaLabel(link)}
+											</a>
+										{/each}
+										<!-- enforcing 'buy on amazon' everywhere so we don't catch a TOS violation from vague button text -->
+										{@render amazonCta(item)}
+									</div>
+								</div>
 							{:else}
 								<div class="where-watch">
 									<div class="watch-heading">
-										{#if item.watchLink && !song}
+										{#if item.watchLink && !song && !book}
 											<a
 												class="watch-label watch-label-link"
 												href={item.watchLink}
@@ -1462,13 +2358,15 @@
 												Where to Watch
 											</a>
 										{:else}
-											<span class="watch-label">{song ? 'Listen' : 'Where to Watch'}</span>
+											<span class="watch-label"
+												>{song ? 'Listen' : book ? 'Read' : 'Where to Watch'}</span
+											>
 										{/if}
-										{#if item.region && !song}
+										{#if item.region && !song && !book}
 											<span class="watch-region">{item.region}</span>
 										{/if}
 									</div>
-									{#if song}
+									{#if song || book}
 										<div class="provider-row provider-row-text">
 											{#each item.providers || [] as p, pi (p.name + String(pi))}
 												{#if p.url}
@@ -1504,7 +2402,7 @@
 														{#each group.items as p, pi (p.name + (p.type || '') + String(pi))}
 															{#if p.url}
 																<a
-																	class="provider-btn"
+																	class="provider-btn max-lg:h-11 max-lg:w-11 max-lg:rounded-lg"
 																	href={p.url}
 																	target="_blank"
 																	rel="external noopener noreferrer"
@@ -1519,7 +2417,7 @@
 																</a>
 															{:else}
 																<span
-																	class="provider-btn"
+																	class="provider-btn max-lg:h-11 max-lg:w-11 max-lg:rounded-lg"
 																	title={p.name}
 																	aria-label="{group.label ? `${group.label}: ` : ''}{p.name}"
 																>
@@ -1536,7 +2434,9 @@
 											{/each}
 										</div>
 									{/if}
-									{#if song}
+									{#if book}
+										{@render amazonCta(item)}
+									{:else if song}
 										<a
 											class="zflix-cta"
 											href={primaryListenUrl(item)}
@@ -1559,9 +2459,30 @@
 							{/if}
 						</div>
 					</div>
+					{/if}
 				</article>
 			{/each}
 		</div>
+	{:else if boardGamesSoon}
+		<!-- placeholder state for board games until the token goes live -->
+		<article class="board-soon-card" transition:fade={{ duration: 220 }}>
+			<p class="board-soon-eyebrow">{BOARD_GAMES_SOON_COPY.eyebrow}</p>
+			<h2 class="board-soon-title">{BOARD_GAMES_SOON_COPY.title}</h2>
+			<p class="board-soon-body">{BOARD_GAMES_SOON_COPY.body}</p>
+		</article>
+	{:else if vibeMissed}
+		<!-- adding a clean zero-result fallback state so the UI never breaks when a query comes back empty -->
+		<article class="vibe-miss-card" transition:fade={{ duration: 220 }}>
+			<p class="vibe-miss-code">[ERROR]: No vibes match this exact query.</p>
+			<div class="vibe-miss-actions">
+				<button type="button" class="vibe-miss-btn primary" onclick={() => void surpriseMe()}>
+					[SURPRISE ME]
+				</button>
+				<button type="button" class="vibe-miss-btn" onclick={resetVibeFilters}>
+					[RESET FILTERS]
+				</button>
+			</div>
+		</article>
 	{:else}
 		<p class="empty-state" transition:fade={{ duration: 220 }}>
 			{uiTheme === 'minimal' ? 'Nothing queued yet' : 'Your match appears here'}
@@ -1569,14 +2490,58 @@
 	{/if}
 {/snippet}
 
+{#snippet amazonCta(item: Rec)}
+	<!-- enabling amazon affiliate button for books and manga -->
+	<a
+		class="zflix-cta amazon-cta"
+		href={getAmazonAffiliateLink(item, watchRegion)}
+		target="_blank"
+		rel="noopener noreferrer"
+	>
+		<svg
+			viewBox="0 0 24 24"
+			width="14"
+			height="14"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+		>
+			<circle cx="9" cy="21" r="1" />
+			<circle cx="20" cy="21" r="1" />
+			<path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+		</svg>
+		Buy on Amazon
+	</a>
+{/snippet}
+
+{#snippet authControls()}
+	<div class="auth-controls">
+		{#if session?.user}
+			{#if session.user.image}
+				<img class="auth-avatar" src={session.user.image} alt="" width="28" height="28" />
+			{/if}
+			<span class="auth-name">{session.user.name || 'You'}</span>
+			<button type="button" class="auth-btn" onclick={() => signOut({ callbackUrl: '/' })}>Sign out</button>
+		{:else}
+			<button type="button" class="auth-btn" onclick={() => (showLoginPrompt = true)}>Sign in</button>
+		{/if}
+	</div>
+{/snippet}
+
 {#snippet viewTabs()}
-	<div class="view-tabs" role="group" aria-label="Results view">
+	<div class="view-tabs hidden lg:inline-grid" role="group" aria-label="Results view">
 		<button
 			type="button"
 			class="view-tab-btn"
 			class:active={viewMode === 'match'}
 			aria-pressed={viewMode === 'match'}
-			onclick={() => (viewMode = 'match')}
+			onclick={() => {
+				viewMode = 'match';
+				mobilePane = 'match';
+			}}
 		>
 			Match
 		</button>
@@ -1585,11 +2550,71 @@
 			class="view-tab-btn"
 			class:active={viewMode === 'list'}
 			aria-pressed={viewMode === 'list'}
-			onclick={() => (viewMode = 'list')}
+			onclick={() => {
+				viewMode = 'list';
+				mobilePane = 'list';
+			}}
 		>
-			My List ({auraList.length})
+			<!-- renaming this to plural since users can sort things into multiple playlists now -->
+			My lists ({totalSavedCount || auraList.length})
 		</button>
 	</div>
+{/snippet}
+
+{#snippet mobileBottomNav()}
+	<!-- moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux -->
+	<nav
+		class="app-bottom-nav fixed inset-x-0 bottom-0 z-50 border-t border-gray-800 bg-black/90 backdrop-blur-md lg:hidden"
+		aria-label="App"
+	>
+		<button
+			type="button"
+			class="app-nav-btn"
+			class:active={mobilePane === 'vibe'}
+			aria-current={mobilePane === 'vibe' ? 'page' : undefined}
+			onclick={() => setMobilePane('vibe')}
+		>
+			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<path
+					d="M4 7h16M7 12h10M9 17h6"
+					stroke="currentColor"
+					stroke-width="1.8"
+					stroke-linecap="round"
+				/>
+			</svg>
+			Vibe
+		</button>
+		<button
+			type="button"
+			class="app-nav-btn"
+			class:active={mobilePane === 'match'}
+			aria-current={mobilePane === 'match' ? 'page' : undefined}
+			onclick={() => setMobilePane('match')}
+		>
+			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" />
+				<path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+			</svg>
+			Match
+		</button>
+		<button
+			type="button"
+			class="app-nav-btn"
+			class:active={mobilePane === 'list'}
+			aria-current={mobilePane === 'list' ? 'page' : undefined}
+			onclick={() => setMobilePane('list')}
+		>
+			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<path
+					d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"
+					stroke="currentColor"
+					stroke-width="1.8"
+					stroke-linecap="round"
+				/>
+			</svg>
+			My Lists
+		</button>
+	</nav>
 {/snippet}
 
 {#snippet themeSwitcher()}
@@ -1616,12 +2641,14 @@
 {/snippet}
 
 {#if uiTheme === 'minimal'}
-	<main class="minimal">
-		<header class="min-top">
+	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+		<!-- updating the top nav so the buttons don't crush each other on phones -->
+		<header class="min-top flex flex-wrap">
 			<h1 class="min-brand">AuraWatch</h1>
-			<div class="header-controls">
+			<div class="header-controls flex flex-wrap">
 				{@render viewTabs()}
 				{@render themeSwitcher()}
+				{@render authControls()}
 			</div>
 		</header>
 
@@ -1629,12 +2656,14 @@
 			Can’t find what to watch? Get one movie, show, anime, song, or game that fits your vibe.
 		</p>
 
-		<div class="min-workspace">
-			<section class="min-form" aria-label="Recommend">
+		<!-- making sure the main container actually uses flex-col on small screens so it stacks properly -->
+		<div class="min-workspace flex w-full max-w-full flex-col gap-4 lg:flex-row">
+			<!-- stripping out hardcoded pixel widths that were breaking the mobile view and causing the black void -->
+			<section class="min-form w-full min-w-0 lg:w-1/2" aria-label="Recommend">
 				{@render formFields()}
 			</section>
 			<section
-				class="min-result"
+				class="min-result w-full min-w-0 lg:w-1/2"
 				id="result-window"
 				aria-live="polite"
 				aria-label="Match result"
@@ -1644,20 +2673,24 @@
 		</div>
 	</main>
 {:else}
-	<main class="desktop">
-		<header class="menubar">
+	<main class="desktop mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+		<!-- updating the top nav so the buttons don't crush each other on phones -->
+		<header class="menubar flex flex-wrap">
 			<div class="menubar-left">
 				<span class="menu-brand">AuraWatch</span>
 			</div>
-			<div class="menubar-right">
+			<div class="menubar-right flex flex-wrap">
 				{@render viewTabs()}
 				{@render themeSwitcher()}
+				{@render authControls()}
 				<time class="menu-clock" datetime={clockLabel || undefined}>{clockLabel || '—'}</time>
 			</div>
 		</header>
 
-		<div class="workspace">
-			<section class="window form-window" aria-label="Recommend">
+		<!-- making sure the main container actually uses flex-col on small screens so it stacks properly -->
+		<div class="workspace flex w-full max-w-full flex-col gap-4 lg:flex-row">
+			<!-- stripping out hardcoded pixel widths that were breaking the mobile view and causing the black void -->
+			<section class="window form-window w-full min-w-0 lg:w-1/2" aria-label="Recommend">
 				<div class="titlebar">
 					<div class="traffic" aria-hidden="true">
 						<span class="dot red"></span>
@@ -1681,7 +2714,7 @@
 			</section>
 
 			<section
-				class="window result-window"
+				class="window result-window w-full min-w-0 lg:w-1/2"
 				id="result-window"
 				aria-live="polite"
 				aria-label="Match result"
@@ -1692,7 +2725,7 @@
 						<span class="dot yellow"></span>
 						<span class="dot green"></span>
 					</div>
-					<span class="titlebar-text">{viewMode === 'list' ? 'My List' : 'Match'}</span>
+					<span class="titlebar-text">{viewMode === 'list' ? 'Vibe Playlists' : 'Match'}</span>
 					<span class="titlebar-tag">{viewMode === 'list' ? 'LIST' : 'PICK'}</span>
 				</div>
 				<div class="window-body result-body">
@@ -1701,17 +2734,262 @@
 			</section>
 		</div>
 
-		<footer class="taskbar">
+		<footer class="taskbar hidden lg:flex">
 			<span class="start-btn">AuraWatch</span>
 			<span class="taskbar-tag">can’t find what to watch?</span>
 		</footer>
 	</main>
 {/if}
 
+{@render mobileBottomNav()}
+
 {#if shareToast}
+	<!-- dropping a retro terminal toast notification so users actually know when their link was copied -->
 	<div class="share-toast" role="status" aria-live="polite" transition:fade={{ duration: 160 }}>
 		{shareToast}
 	</div>
+{/if}
+
+{#if showLoginPrompt}
+	<!-- turning modals into slide-up bottom sheets so it feels like a real app -->
+	<div
+		class="login-prompt-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4 max-lg:items-end max-lg:p-0"
+		class:minimal-backdrop={uiTheme === 'minimal'}
+		role="presentation"
+		onclick={() => (showLoginPrompt = false)}
+		onkeydown={(e) => {
+			// esc closes the login sheet
+			if (e.key === 'Escape') showLoginPrompt = false;
+		}}
+		transition:fade={{ duration: 160 }}
+	>
+		<div
+			class="term-modal mt-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto transition-transform max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-w-none max-lg:rounded-t-3xl"
+			class:modal-desktop={uiTheme === 'desktop'}
+			class:modal-minimal={uiTheme === 'minimal'}
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="login-prompt-title"
+			tabindex="0"
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={(e) => {
+				e.stopPropagation();
+				if (e.key === 'Escape') showLoginPrompt = false;
+			}}
+		>
+			<div class="sheet-handle lg:hidden" aria-hidden="true"></div>
+			{#if uiTheme === 'desktop'}
+				<!-- hiding the fake mac window buttons when we aren't in desktop mode -->
+				<div class="term-titlebar">
+					<div class="traffic" aria-hidden="true">
+						<button
+							type="button"
+							class="dot red"
+							aria-label="Close"
+							onclick={() => (showLoginPrompt = false)}
+						></button>
+						<span class="dot yellow"></span>
+						<span class="dot green"></span>
+					</div>
+					<span class="titlebar-text">~/AuraWatch — Sign in</span>
+					<span class="titlebar-tag">AUTH</span>
+				</div>
+			{/if}
+			<div class="term-modal-body">
+				<h2 id="login-prompt-title">Sign in to save</h2>
+				<p>Cloud sync needs a login so you can share your vibe list.</p>
+				<div class="login-prompt-actions">
+					<button
+						type="button"
+						class="term-btn primary discord"
+						onclick={() => signIn('discord', { callbackUrl: '/' })}
+					>
+						Login with Discord
+					</button>
+					<form
+						method="POST"
+						action={`${resolve('/signin')}?/login`}
+						class="login-cred-form"
+						use:enhance={() => {
+							return async ({ result, update }) => {
+								if (result.type === 'redirect') {
+									showLoginPrompt = false;
+									await invalidateAll();
+									return;
+								}
+								await update({ reset: false });
+							};
+						}}
+					>
+						<input type="email" name="email" required placeholder="Email" autocomplete="email" />
+						<input
+							type="password"
+							name="password"
+							required
+							placeholder="Password"
+							autocomplete="current-password"
+						/>
+						<button type="submit" class="term-btn primary">Sign in</button>
+					</form>
+					<a class="auth-link" href={resolve('/signin')}>Need an account? Register →</a>
+					<button type="button" class="term-btn" onclick={() => (showLoginPrompt = false)}
+						>Not now</button
+					>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if savePickerItem}
+	<!-- turning modals into slide-up bottom sheets so it feels like a real app -->
+	<div
+		class="login-prompt-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4 max-lg:items-end max-lg:p-0"
+		class:minimal-backdrop={uiTheme === 'minimal'}
+		role="presentation"
+		onclick={() => {
+			if (!saveBusy) savePickerItem = null;
+		}}
+		onkeydown={(e) => {
+			if (e.key === 'Escape' && !saveBusy) savePickerItem = null;
+		}}
+		transition:fade={{ duration: 160 }}
+	>
+		<div
+			class="term-modal playlist-picker mt-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto transition-transform max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-w-none max-lg:rounded-t-3xl"
+			class:modal-desktop={uiTheme === 'desktop'}
+			class:modal-minimal={uiTheme === 'minimal'}
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="playlist-picker-title"
+			tabindex="0"
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={(e) => {
+				e.stopPropagation();
+				if (e.key === 'Escape' && !saveBusy) savePickerItem = null;
+			}}
+		>
+			<div class="sheet-handle lg:hidden" aria-hidden="true"></div>
+			{#if uiTheme === 'desktop'}
+				<div class="term-titlebar">
+					<div class="traffic" aria-hidden="true">
+						<button
+							type="button"
+							class="dot red"
+							aria-label="Close"
+							onclick={() => {
+								if (!saveBusy) savePickerItem = null;
+							}}
+						></button>
+						<span class="dot yellow"></span>
+						<span class="dot green"></span>
+					</div>
+					<span class="titlebar-text">~/AuraWatch — Save to playlist</span>
+					<span class="titlebar-tag">SAVE</span>
+				</div>
+			{/if}
+			<div class="term-modal-body">
+				<h2 id="playlist-picker-title">Save to playlist</h2>
+				<p>“{savePickerItem.title}” — pick a vibe group.</p>
+				<div class="login-prompt-actions">
+					{#each cloudPlaylists as pl (pl.id)}
+						{@const already = pl.items.some(
+							(i: CloudPlaylistClient['items'][number]) =>
+								i.title.toLowerCase() === savePickerItem!.title.toLowerCase()
+						)}
+						<button
+							type="button"
+							class="term-btn primary playlist-pick-btn"
+							class:already
+							disabled={saveBusy || already}
+							onclick={() => void saveToPlaylist(pl.id)}
+						>
+							{#if saveBusy && savingListId === pl.id}
+								{uiTheme === 'minimal' ? 'Saving…' : '[ SAVING... ]'}
+							{:else if already}
+								In {pl.title}
+							{:else}
+								{pl.title}
+							{/if}
+						</button>
+					{/each}
+					{#if !cloudPlaylists.length}
+						<button
+							type="button"
+							class="term-btn primary"
+							disabled={saveBusy || playlistBusy}
+							onclick={() => {
+								newPlaylistTitle = newPlaylistTitle.trim() || 'My List';
+								void createPlaylistAndMaybeSave();
+							}}
+						>
+							{playlistBusy || saveBusy
+								? uiTheme === 'minimal'
+									? 'Saving…'
+									: '[ SAVING... ]'
+								: 'Save to My List'}
+						</button>
+					{/if}
+					<div class="playlist-create picker-create">
+						<input
+							class="playlist-input"
+							type="text"
+							placeholder="New playlist name…"
+							bind:value={newPlaylistTitle}
+							disabled={playlistBusy || saveBusy}
+							onkeydown={(e) => {
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									void createPlaylistAndMaybeSave();
+								}
+							}}
+						/>
+						<button
+							type="button"
+							class="term-btn"
+							disabled={playlistBusy || saveBusy || !newPlaylistTitle.trim()}
+							onclick={() => void createPlaylistAndMaybeSave()}
+						>
+							{playlistBusy
+								? uiTheme === 'minimal'
+									? 'Saving…'
+									: '[ SAVING... ]'
+								: 'Create & save'}
+						</button>
+					</div>
+					<button
+						type="button"
+						class="term-btn"
+						disabled={saveBusy}
+						onclick={() => (savePickerItem = null)}>Cancel</button
+					>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if viewMode === 'match' && results.length && !isLoading && fabItem}
+	<!-- sticky save button - users couldn't find the old one -->
+	<button
+		type="button"
+		class={[
+			'save-fab max-lg:min-h-12 max-lg:px-5 max-lg:py-3',
+			mobilePane !== 'match' && 'save-fab-mobile-hide'
+		]}
+		class:saved={fabIsSaved}
+		class:minimal-fab={uiTheme === 'minimal'}
+		aria-label={fabIsSaved ? `Remove ${fabItem.title} from My List` : `Save ${fabItem.title} to My List`}
+		aria-pressed={fabIsSaved}
+		onclick={toggleFabSave}
+		transition:fly={{ y: 24, duration: 220, easing: quintOut }}
+	>
+		<span class="save-fab-icon" aria-hidden="true">{fabIsSaved ? '★' : '☆'}</span>
+		<span class="save-fab-copy">
+			<span class="save-fab-label">{fabIsSaved ? 'Saved' : 'Save to List'}</span>
+			<span class="save-fab-title">{fabItem.title}</span>
+		</span>
+	</button>
 {/if}
 
 <!-- Crawlable copy for search engines (kept out of the hero composition) -->
@@ -1741,6 +3019,9 @@
 	:global(body) {
 		margin: 0;
 		min-height: 100%;
+		width: 100%;
+		max-width: 100%;
+		overflow-x: hidden;
 		background: #0e0e12;
 		color: #f3f4f6;
 	}
@@ -1755,7 +3036,7 @@
 
 	/* Shared view tabs + theme segmented control */
 	.view-tabs {
-		display: inline-grid;
+		display: none;
 		grid-template-columns: 1fr 1fr;
 		gap: 0;
 		border-radius: 8px;
@@ -1763,6 +3044,127 @@
 		flex-shrink: 0;
 		border: 1px solid rgba(255, 255, 255, 0.14);
 		background: rgba(255, 255, 255, 0.04);
+	}
+
+	@media (min-width: 1024px) {
+		.view-tabs {
+			display: inline-grid;
+		}
+	}
+
+	/* tucking the massive genre list into an accordion so it doesn't eat the whole screen */
+	.genre-acc {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+	.genre-acc-summary {
+		list-style: none;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		font-size: 0.78rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--muted, #9ca3af);
+		padding: 0.55rem 0;
+	}
+	.genre-acc-summary::-webkit-details-marker {
+		display: none;
+	}
+	.genre-acc-count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.25rem;
+		padding: 0.1rem 0.4rem;
+		border-radius: 999px;
+		background: var(--accent, #8b7cf7);
+		color: #fff;
+		font-size: 0.65rem;
+	}
+	.genre-acc-desk-label {
+		display: none;
+	}
+
+	.genre-acc:not([open]) .genre-grid,
+	.genre-acc:not([open]) .genre-acc-desk-label {
+		display: none;
+	}
+
+	@media (min-width: 1024px) {
+		.genre-acc > summary {
+			display: none;
+		}
+		.genre-acc-desk-label {
+			display: block;
+		}
+		.genre-acc .genre-grid,
+		.genre-acc:not([open]) .genre-grid {
+			display: flex !important;
+		}
+	}
+
+	/* moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux */
+	.app-bottom-nav {
+		display: flex;
+		align-items: stretch;
+		justify-content: space-around;
+		padding: 0.35rem 0.5rem calc(0.35rem + env(safe-area-inset-bottom));
+	}
+	.app-nav-btn {
+		appearance: none;
+		border: none;
+		background: transparent;
+		color: #9ca3af;
+		cursor: pointer;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.2rem;
+		padding: 0.45rem 0.25rem;
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		min-height: 3.15rem;
+	}
+	.app-nav-btn.active {
+		color: #fff;
+	}
+	.app-nav-icon {
+		width: 1.35rem;
+		height: 1.35rem;
+	}
+
+	@media (min-width: 1024px) {
+		.app-bottom-nav {
+			display: none;
+		}
+	}
+
+	@media (max-width: 1023px) {
+		.mobile-shell-match .min-form,
+		.mobile-shell-list .min-form,
+		.mobile-shell-match .form-window,
+		.mobile-shell-list .form-window,
+		.mobile-shell-vibe .min-result,
+		.mobile-shell-vibe .result-window {
+			display: none !important;
+		}
+		.mobile-shell-match .min-headline,
+		.mobile-shell-list .min-headline {
+			display: none;
+		}
+		.desktop .titlebar,
+		.desktop .taskbar,
+		.desktop .menu-clock {
+			display: none;
+		}
 	}
 
 	.view-tab-btn {
@@ -1846,6 +3248,9 @@
 		flex-direction: column;
 		min-height: 100vh;
 		min-height: 100dvh;
+		width: 100%;
+		max-width: 100%;
+		overflow-x: hidden;
 		background: var(--desk);
 		color: var(--ink);
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -1880,17 +3285,24 @@
 		outline-offset: -2px;
 	}
 
+	/* updating the top nav so the buttons don't crush each other on phones */
 	.desktop .menubar {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 1rem;
+		gap: 0.55rem 1rem;
+		flex-wrap: wrap;
 		flex-shrink: 0;
-		height: 28px;
-		padding: 0 0.75rem;
+		height: auto;
+		min-height: 28px;
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		padding: 0.2rem 0.75rem;
 		background: var(--menu);
 		border-bottom: 2px solid var(--line);
 		font-size: 0.78rem;
+		box-sizing: border-box;
 	}
 
 	.desktop .menubar-left {
@@ -1898,15 +3310,15 @@
 		align-items: center;
 		gap: 0.85rem;
 		min-width: 0;
-		overflow-x: auto;
-		scrollbar-width: none;
 	}
 
 	.desktop .menubar-right {
 		display: flex;
 		align-items: center;
-		gap: 0.85rem;
-		flex-shrink: 0;
+		gap: 0.55rem;
+		flex-wrap: wrap;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	.desktop .menu-brand {
@@ -1922,19 +3334,22 @@
 		white-space: nowrap;
 	}
 
+	/* making sure the main container actually uses flex-col on small screens so it stacks properly */
 	.desktop .workspace {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
 		width: 100%;
-		max-width: 1100px;
+		max-width: min(1100px, 100%);
+		min-width: 0;
+		overflow-x: hidden;
 		margin: 0 auto;
 		padding: 1rem 0.85rem 1.25rem;
 		box-sizing: border-box;
 	}
 
-	@media (min-width: 960px) {
+	@media (min-width: 1024px) {
 		.desktop .workspace {
 			flex-direction: row;
 			align-items: stretch;
@@ -1950,21 +3365,28 @@
 		border: 2px solid var(--line);
 		border-radius: 0;
 		min-width: 0;
+		width: 100%;
 		flex: 1;
 	}
 
-	@media (min-width: 960px) {
-		.desktop .form-window {
-			flex: 1 1 48%;
-			max-width: 520px;
-		}
+	/* stripping out hardcoded pixel widths that were breaking the mobile view and causing the black void */
+	.desktop .form-window,
+	.desktop .result-window {
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+	}
+
+	@media (min-width: 1024px) {
+		.desktop .form-window,
 		.desktop .result-window {
-			flex: 1 1 52%;
+			flex: 1 1 50%;
+			width: 50%;
 		}
 	}
 
 	.desktop .titlebar {
-		display: flex;
+		display: none;
 		align-items: center;
 		gap: 0.55rem;
 		flex-shrink: 0;
@@ -1973,6 +3395,12 @@
 		background: var(--bar);
 		color: #f5f5f5;
 		font-size: 0.72rem;
+	}
+
+	@media (min-width: 1024px) {
+		.desktop .titlebar {
+			display: flex;
+		}
 	}
 
 	.desktop .traffic {
@@ -2023,6 +3451,8 @@
 		padding: 1.1rem 1.15rem 1.25rem;
 		background: var(--window);
 		box-sizing: border-box;
+		min-width: 0;
+		overflow-x: clip;
 	}
 
 	.desktop .form-body {
@@ -2070,6 +3500,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.05rem;
+	}
+
+	.form-stack {
+		display: flex;
+		flex-direction: column;
+		gap: inherit;
 	}
 
 	.desktop .field {
@@ -2295,20 +3731,101 @@
 		cursor: not-allowed;
 	}
 
-	/* 5 formats — one even row (no orphan Games cell) */
-	.desktop .format-segment {
-		grid-template-columns: repeat(5, 1fr);
+	/* nuking the grid layout for flex pills because that empty square was driving me crazy */
+	.desktop .format-pills {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		align-items: center;
 	}
-	.desktop .format-segment .segment-btn {
-		border-right: 2px solid var(--line);
-		font-size: 0.62rem;
-		padding: 0.55rem 0.1rem;
+	.desktop .format-pill {
+		appearance: none;
+		border: 2px solid var(--line);
+		background: var(--window);
+		color: var(--ink);
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 0.4rem 0.85rem;
+		border-radius: 999px;
+		line-height: 1.2;
+		transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 	}
-	.desktop .format-segment .segment-btn:nth-child(5n) {
-		border-right: none;
+	.desktop .format-pill:hover:not(:disabled):not(.active) {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
-	.desktop .format-segment .segment-btn:last-child {
-		border-right: none;
+	.desktop .format-pill.active {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: #fff;
+	}
+	.desktop .format-pill:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.desktop .format-pill.full-vibe-pill {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+	}
+	.desktop .format-pill.full-vibe-pill.active {
+		box-shadow: 2px 2px 0 var(--line);
+	}
+
+	.desktop .vibe-pack {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		width: 100%;
+	}
+	.desktop .vibe-pack-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.65rem;
+	}
+	.desktop .vibe-slot {
+		border: 2px solid var(--line);
+		background: #f7f7f7;
+		padding: 0.55rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		min-width: 0;
+	}
+	.desktop .vibe-slot-label {
+		margin: 0;
+		font-size: 0.65rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--accent);
+	}
+	.desktop .vibe-slot-cover {
+		width: 100%;
+		aspect-ratio: 2 / 3;
+		object-fit: cover;
+		border: 2px solid var(--line);
+		background: #ddd;
+	}
+	.desktop .vibe-slot-cover-sq {
+		aspect-ratio: 1 / 1;
+	}
+	.desktop .vibe-slot-title {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.25;
+	}
+	.desktop .vibe-slot-pitch {
+		margin: 0;
+		font-size: 0.72rem;
+		color: var(--muted);
+		line-height: 1.35;
+	}
+	@media (max-width: 900px) {
+		.desktop .vibe-pack-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.desktop .maturity-segment {
@@ -2343,22 +3860,9 @@
 	}
 
 	@media (max-width: 640px) {
-		.desktop .format-segment {
-			grid-template-columns: repeat(3, 1fr);
-		}
-		.desktop .format-segment .segment-btn {
-			border-right: 2px solid var(--line);
-			border-bottom: 2px solid var(--line);
+		.desktop .format-pill {
 			font-size: 0.68rem;
-		}
-		.desktop .format-segment .segment-btn:nth-child(3n) {
-			border-right: none;
-		}
-		.desktop .format-segment .segment-btn:nth-child(n + 4) {
-			border-bottom: none;
-		}
-		.desktop .format-segment .segment-btn:last-child {
-			border-right: none;
+			padding: 0.35rem 0.7rem;
 		}
 	}
 
@@ -2589,6 +4093,26 @@
 		margin-top: 0.2rem;
 		align-items: stretch;
 	}
+
+	@media (max-width: 1023px) {
+		.desktop .cta-row,
+		.minimal .cta-row {
+			position: sticky;
+			bottom: 80px;
+			z-index: 20;
+			padding: 1rem 0;
+			margin-top: 0;
+			background: var(--window, var(--bg, #ffffff));
+			border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+		}
+		.form-stack {
+			padding-bottom: 8rem;
+		}
+		.desktop .genre-grid,
+		.minimal .genre-grid {
+			max-height: min(42vh, 16rem);
+		}
+	}
 	.desktop .cta {
 		appearance: none;
 		border: 2px solid var(--accent);
@@ -2632,80 +4156,49 @@
 		appearance: none;
 		margin-left: auto;
 		border: 2px solid var(--line);
-		background: var(--window);
-		color: var(--ink);
+		background: var(--accent);
+		color: #fff;
 		cursor: pointer;
-		padding: 0.05rem 0.4rem;
+		padding: 0.2rem 0.55rem;
 		font: inherit;
-		font-size: 0.95rem;
+		font-size: 0.78rem;
+		font-weight: 700;
 		line-height: 1.2;
 		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.28rem;
+		text-transform: uppercase;
+		letter-spacing: 0.02em;
+		box-shadow: 3px 3px 0 var(--line);
 	}
 	.desktop .save-btn:hover {
-		border-color: var(--accent);
-		color: var(--accent);
+		filter: brightness(1.05);
 	}
 	.desktop .save-btn.saved {
+		background: var(--window);
 		color: var(--accent);
 		border-color: var(--accent);
+	}
+	.desktop .lang-select {
+		width: 100%;
+		border: 2px solid var(--line);
+		background: var(--window);
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.9rem;
+		padding: 0.45rem 0.55rem;
+		appearance: auto;
+	}
+	.desktop .lang-select:focus {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
 	}
 	.desktop .aura-list {
 		display: flex;
 		flex-direction: column;
 		gap: 0.75rem;
 		width: 100%;
-	}
-	.desktop .aura-list-card {
-		display: grid;
-		grid-template-columns: 4.5rem 1fr;
-		gap: 0.75rem;
-		align-items: start;
-		padding: 0.65rem;
-		border: 2px solid var(--line);
-		background: var(--window);
-	}
-	.desktop .aura-list-cover {
-		width: 4.5rem;
-		aspect-ratio: 2 / 3;
-		overflow: hidden;
-		border: 2px solid var(--line);
-		background: #eee;
-	}
-	.desktop .aura-list-cover .cover,
-	.desktop .aura-list-cover .cover-fallback {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-		display: block;
-	}
-	.desktop .aura-list-meta {
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
-	.desktop .aura-list-meta .rec-title {
-		margin: 0;
-		font-size: 0.95rem;
-	}
-	.desktop .aura-list-remove {
-		appearance: none;
-		align-self: flex-start;
-		margin-top: 0.25rem;
-		border: 2px solid var(--line);
-		background: transparent;
-		cursor: pointer;
-		padding: 0.25rem 0.5rem;
-		font: inherit;
-		font-size: 0.68rem;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		color: var(--muted);
-	}
-	.desktop .aura-list-remove:hover {
-		color: var(--accent);
-		border-color: var(--accent);
 	}
 
 	.desktop .spinner {
@@ -2761,6 +4254,13 @@
 		margin: 0 0 0.35rem;
 	}
 
+	.desktop .rec-list-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-shrink: 0;
+	}
+
 	.desktop .rec-list-header {
 		margin: 0;
 		font-size: 0.65rem;
@@ -2803,6 +4303,77 @@
 		font-size: 0.9rem;
 		color: var(--muted);
 		text-align: left;
+	}
+
+	.desktop .board-soon-card {
+		margin: 0;
+		padding: 1rem 0;
+		border-top: 2px solid var(--line);
+		border-bottom: 2px solid var(--line);
+	}
+	.desktop .board-soon-eyebrow {
+		margin: 0 0 0.35rem;
+		font-size: 0.68rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.desktop .board-soon-title {
+		margin: 0 0 0.45rem;
+		font-size: 1.15rem;
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		color: var(--ink);
+	}
+	.desktop .board-soon-body {
+		margin: 0;
+		font-size: 0.88rem;
+		line-height: 1.45;
+		color: var(--muted);
+		max-width: 36rem;
+	}
+
+	.desktop .vibe-miss-card {
+		margin: 0;
+		padding: 1rem 1rem 1.1rem;
+		border: 2px solid #111;
+		border-left: 6px solid #ff4c00;
+		background: #fff;
+		box-shadow: 4px 4px 0 #111;
+	}
+	.desktop .vibe-miss-code {
+		margin: 0 0 0.9rem;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1.4;
+		color: #111;
+	}
+	.desktop .vibe-miss-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.desktop .vibe-miss-btn {
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		padding: 0.55rem 0.8rem;
+		min-height: 44px;
+		border: 2px solid #111;
+		background: #fff;
+		color: #111;
+		cursor: pointer;
+	}
+	.desktop .vibe-miss-btn.primary {
+		background: #ff4c00;
+		color: #fff;
+	}
+	.desktop .vibe-miss-btn:hover {
+		translate: 1px 1px;
+		box-shadow: 2px 2px 0 #111;
 	}
 
 	.desktop .loading-block {
@@ -2870,9 +4441,10 @@
 
 	.desktop .rec-grid {
 		display: grid;
-		grid-template-columns: 120px 1fr;
+		grid-template-columns: 120px minmax(0, 1fr);
 		gap: 1.1rem;
 		align-items: start;
+		min-width: 0;
 	}
 
 	@media (min-width: 960px) {
@@ -2889,6 +4461,7 @@
 	}
 
 	.desktop .cover-wrap {
+		position: relative;
 		border-radius: 0;
 		overflow: hidden;
 		border: 2px solid var(--line);
@@ -2906,6 +4479,17 @@
 		height: auto;
 		aspect-ratio: 2 / 3;
 		object-fit: cover;
+		opacity: 0;
+		transition: opacity 0.35s ease;
+	}
+	.desktop .cover.cover-in {
+		opacity: 1;
+	}
+	.desktop .cover-skel {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		box-sizing: border-box;
 	}
 	.desktop .cover.cover-square,
 	.desktop .cover-fallback.cover-square {
@@ -3097,6 +4681,9 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+	.desktop .amazon-cta {
+		gap: 0.4rem;
+	}
 	.desktop .game-platform-line {
 		margin: 0;
 		font-size: 0.75rem;
@@ -3116,7 +4703,7 @@
 	}
 
 	.desktop .taskbar {
-		display: flex;
+		display: none;
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem;
@@ -3127,6 +4714,12 @@
 		border-top: 2px solid var(--line);
 		color: #ddd;
 		font-size: 0.75rem;
+	}
+
+	@media (min-width: 1024px) {
+		.desktop .taskbar {
+			display: flex;
+		}
 	}
 
 	.desktop .start-btn {
@@ -3161,6 +4754,9 @@
 		flex-direction: column;
 		min-height: 100vh;
 		min-height: 100dvh;
+		width: 100%;
+		max-width: 100%;
+		overflow-x: hidden;
 		background: var(--bg);
 		color: var(--ink);
 		font-family: 'IBM Plex Sans', system-ui, sans-serif;
@@ -3230,14 +4826,23 @@
 		margin: 0 0 0.75rem;
 	}
 
+	/* making sure the main container actually uses flex-col on small screens so it stacks properly */
 	.minimal .min-workspace {
 		display: flex;
 		flex-direction: column;
 		gap: 2.5rem;
 		width: 100%;
-		max-width: 1040px;
+		max-width: min(1040px, 100%);
+		min-width: 0;
+		overflow-x: hidden;
 		margin: 0 auto;
 		flex: 1;
+	}
+
+	.minimal .min-form,
+	.minimal .min-result {
+		width: 100%;
+		min-width: 0;
 	}
 
 	.minimal .min-result {
@@ -3247,7 +4852,7 @@
 		scrollbar-color: var(--muted) transparent;
 	}
 
-	@media (min-width: 900px) {
+	@media (min-width: 1024px) {
 		.minimal .min-workspace {
 			flex-direction: row;
 			align-items: stretch;
@@ -3255,13 +4860,15 @@
 		}
 
 		.minimal .min-form {
-			flex: 1 1 48%;
+			flex: 1 1 50%;
+			width: 50%;
 			padding-right: 2rem;
 			border-right: 1px solid var(--line);
 		}
 
 		.minimal .min-result {
-			flex: 1 1 52%;
+			flex: 1 1 50%;
+			width: 50%;
 			padding-left: 2rem;
 			display: flex;
 			flex-direction: column;
@@ -3287,6 +4894,13 @@
 		justify-content: space-between;
 		gap: 0.75rem;
 		margin: 0 0 0.4rem;
+	}
+
+	.minimal .rec-list-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-shrink: 0;
 	}
 
 	.minimal .rec-list-header {
@@ -3557,19 +5171,100 @@
 		cursor: not-allowed;
 	}
 
-	.minimal .format-segment {
-		grid-template-columns: repeat(5, 1fr);
+	.minimal .format-pills {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		align-items: center;
 	}
-	.minimal .format-segment .segment-btn {
-		border-right: 1px solid var(--line);
-		font-size: 0.68rem;
-		padding: 0.55rem 0.1rem;
+	.minimal .format-pill {
+		appearance: none;
+		border: 1px solid var(--line);
+		background: transparent;
+		color: var(--muted);
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 500;
+		padding: 0.4rem 0.9rem;
+		border-radius: 999px;
+		line-height: 1.2;
 	}
-	.minimal .format-segment .segment-btn:nth-child(5n) {
-		border-right: none;
+	.minimal .format-pill:hover:not(:disabled):not(.active) {
+		color: var(--ink);
+		border-color: rgba(160, 140, 240, 0.45);
 	}
-	.minimal .format-segment .segment-btn:last-child {
-		border-right: none;
+	.minimal .format-pill.active {
+		color: #0e0e12;
+		background: #f3f4f6;
+		border-color: #f3f4f6;
+		font-weight: 600;
+	}
+	.minimal .format-pill:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.minimal .format-pill.full-vibe-pill {
+		border-color: rgba(160, 140, 240, 0.55);
+		box-shadow: 0 0 16px rgba(124, 108, 240, 0.25);
+	}
+	.minimal .format-pill.full-vibe-pill.active {
+		background: rgba(124, 108, 240, 0.85);
+		border-color: transparent;
+		color: #fff;
+	}
+	.minimal .vibe-pack {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		width: 100%;
+	}
+	.minimal .vibe-pack-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.85rem;
+	}
+	.minimal .vibe-slot {
+		border-bottom: 1px solid var(--line);
+		padding-bottom: 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		min-width: 0;
+	}
+	.minimal .vibe-slot-label {
+		margin: 0;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: #c4b5fd;
+	}
+	.minimal .vibe-slot-cover {
+		width: 100%;
+		max-width: 8rem;
+		aspect-ratio: 2 / 3;
+		object-fit: cover;
+		border-radius: 8px;
+		background: #222;
+	}
+	.minimal .vibe-slot-cover-sq {
+		aspect-ratio: 1 / 1;
+	}
+	.minimal .vibe-slot-title {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+	.minimal .vibe-slot-pitch {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--muted);
+		line-height: 1.4;
+	}
+	@media (max-width: 900px) {
+		.minimal .vibe-pack-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.minimal .maturity-segment {
@@ -3604,22 +5299,9 @@
 	}
 
 	@media (max-width: 640px) {
-		.minimal .format-segment {
-			grid-template-columns: repeat(3, 1fr);
-		}
-		.minimal .format-segment .segment-btn {
-			border-right: 1px solid var(--line);
-			border-bottom: 1px solid var(--line);
+		.minimal .format-pill {
 			font-size: 0.72rem;
-		}
-		.minimal .format-segment .segment-btn:nth-child(3n) {
-			border-right: none;
-		}
-		.minimal .format-segment .segment-btn:nth-child(n + 4) {
-			border-bottom: none;
-		}
-		.minimal .format-segment .segment-btn:last-child {
-			border-right: none;
+			padding: 0.35rem 0.75rem;
 		}
 	}
 
@@ -3892,80 +5574,51 @@
 	.minimal .save-btn {
 		appearance: none;
 		margin-left: auto;
-		border: 1px solid var(--line);
-		background: transparent;
-		color: var(--muted);
+		border: 1px solid rgba(160, 140, 240, 0.55);
+		background: rgba(160, 140, 240, 0.18);
+		color: var(--ink);
 		cursor: pointer;
-		border-radius: 6px;
-		padding: 0.1rem 0.4rem;
+		border-radius: 8px;
+		padding: 0.28rem 0.65rem;
 		font: inherit;
-		font-size: 1rem;
+		font-size: 0.82rem;
+		font-weight: 600;
 		line-height: 1.2;
 		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
 	}
 	.minimal .save-btn:hover {
 		color: var(--ink);
-		border-color: rgba(160, 140, 240, 0.55);
+		border-color: rgba(160, 140, 240, 0.85);
+		background: rgba(160, 140, 240, 0.28);
 	}
 	.minimal .save-btn.saved {
 		color: #c4b5fd;
 		border-color: rgba(160, 140, 240, 0.55);
+		background: transparent;
+	}
+	.minimal .lang-select {
+		width: 100%;
+		border: 1px solid var(--line);
+		background: rgba(255, 255, 255, 0.03);
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.9rem;
+		padding: 0.5rem 0.6rem;
+		border-radius: 8px;
+		appearance: auto;
+	}
+	.minimal .lang-select:focus {
+		outline: 1px solid rgba(160, 140, 240, 0.55);
+		outline-offset: 1px;
 	}
 	.minimal .aura-list {
 		display: flex;
 		flex-direction: column;
 		gap: 0.85rem;
 		width: 100%;
-	}
-	.minimal .aura-list-card {
-		display: grid;
-		grid-template-columns: 4.25rem 1fr;
-		gap: 0.85rem;
-		align-items: start;
-		padding: 0.35rem 0;
-		border-bottom: 1px solid var(--line);
-	}
-	.minimal .aura-list-cover {
-		width: 4.25rem;
-		aspect-ratio: 2 / 3;
-		overflow: hidden;
-		border-radius: 6px;
-		background: rgba(255, 255, 255, 0.06);
-	}
-	.minimal .aura-list-cover .cover,
-	.minimal .aura-list-cover .cover-fallback {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-		display: block;
-	}
-	.minimal .aura-list-meta {
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-	}
-	.minimal .aura-list-meta .rec-title {
-		margin: 0;
-		font-size: 1.05rem;
-	}
-	.minimal .aura-list-remove {
-		appearance: none;
-		align-self: flex-start;
-		margin-top: 0.2rem;
-		border: 1px solid var(--line);
-		background: transparent;
-		cursor: pointer;
-		border-radius: 6px;
-		padding: 0.3rem 0.55rem;
-		font: inherit;
-		font-size: 0.75rem;
-		font-weight: 500;
-		color: var(--muted);
-	}
-	.minimal .aura-list-remove:hover {
-		color: #f87171;
-		border-color: rgba(248, 113, 113, 0.45);
 	}
 
 	.minimal .spinner {
@@ -3988,6 +5641,77 @@
 		font-size: 0.95rem;
 		color: var(--muted);
 		text-align: left;
+	}
+
+	.minimal .board-soon-card {
+		margin: 0;
+		padding: 1rem 0.15rem;
+		border-top: 1px solid var(--line);
+		border-bottom: 1px solid var(--line);
+	}
+	.minimal .board-soon-eyebrow {
+		margin: 0 0 0.35rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.minimal .board-soon-title {
+		margin: 0 0 0.45rem;
+		font-size: 1.1rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--ink);
+	}
+	.minimal .board-soon-body {
+		margin: 0;
+		font-size: 0.9rem;
+		line-height: 1.45;
+		color: var(--muted);
+		max-width: 36rem;
+	}
+
+	.minimal .vibe-miss-card {
+		margin: 0;
+		padding: 1rem 1rem 1.1rem;
+		border: 2px solid #111;
+		border-left: 6px solid #ff4c00;
+		background: #16161c;
+		box-shadow: 4px 4px 0 #000;
+	}
+	.minimal .vibe-miss-code {
+		margin: 0 0 0.9rem;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1.4;
+		color: #f2f2f5;
+	}
+	.minimal .vibe-miss-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.minimal .vibe-miss-btn {
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		padding: 0.55rem 0.8rem;
+		min-height: 44px;
+		border: 2px solid #111;
+		background: #0e0e12;
+		color: #f2f2f5;
+		cursor: pointer;
+	}
+	.minimal .vibe-miss-btn.primary {
+		background: #ff4c00;
+		color: #fff;
+		border-color: #111;
+	}
+	.minimal .vibe-miss-btn:hover {
+		border-color: #ff4c00;
 	}
 
 	.minimal .loading-block {
@@ -4057,9 +5781,10 @@
 
 	.minimal .rec-grid {
 		display: grid;
-		grid-template-columns: 110px 1fr;
+		grid-template-columns: 110px minmax(0, 1fr);
 		gap: 1.25rem;
 		align-items: start;
+		min-width: 0;
 	}
 
 	@media (min-width: 900px) {
@@ -4076,6 +5801,7 @@
 	}
 
 	.minimal .cover-wrap {
+		position: relative;
 		border-radius: 8px;
 		overflow: hidden;
 		border: 1px solid var(--line);
@@ -4094,6 +5820,17 @@
 		height: auto;
 		aspect-ratio: 2 / 3;
 		object-fit: cover;
+		opacity: 0;
+		transition: opacity 0.35s ease;
+	}
+	.minimal .cover.cover-in {
+		opacity: 1;
+	}
+	.minimal .cover-skel {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		box-sizing: border-box;
 	}
 	.minimal .cover.cover-square,
 	.minimal .cover-fallback.cover-square {
@@ -4284,6 +6021,9 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+	.minimal .amazon-cta {
+		gap: 0.4rem;
+	}
 	.minimal .game-platform-line {
 		margin: 0;
 		font-size: 0.8rem;
@@ -4302,29 +6042,185 @@
 		margin-top: 0.85rem;
 	}
 
+	/* sticky save fab — hard to miss on purpose */
+	.save-fab {
+		position: fixed;
+		right: 1rem;
+		bottom: 3.25rem; /* sit above the desktop taskbar */
+		z-index: 70;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.65rem;
+		max-width: min(20rem, calc(100vw - 2rem));
+		padding: 0.7rem 1rem;
+		border: 2px solid #1a1a1a;
+		background: #ff4c00;
+		color: #fff;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.01em;
+		cursor: pointer;
+		box-shadow: 4px 4px 0 #1a1a1a;
+		text-align: left;
+	}
+	.save-fab:hover {
+		filter: brightness(1.06);
+	}
+	.save-fab.saved {
+		background: #fff;
+		color: #ff4c00;
+	}
+	.save-fab-icon {
+		font-size: 1.35rem;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+	.save-fab-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+	.save-fab-label {
+		text-transform: uppercase;
+		line-height: 1.1;
+	}
+	.save-fab-title {
+		font-weight: 500;
+		font-size: 0.68rem;
+		opacity: 0.9;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 14rem;
+	}
+	.save-fab.minimal-fab {
+		bottom: 1.15rem;
+		border: 1px solid rgba(160, 140, 240, 0.65);
+		background: #7c6cf0;
+		color: #fff;
+		border-radius: 999px;
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+		font-family: 'IBM Plex Sans', system-ui, sans-serif;
+	}
+	.save-fab.minimal-fab.saved {
+		background: #16161c;
+		color: #c4b5fd;
+	}
+	@media (max-width: 640px) {
+		.save-fab {
+			left: 1rem;
+			right: 1rem;
+			max-width: none;
+			justify-content: center;
+		}
+		.save-fab-title {
+			max-width: 60vw;
+		}
+	}
+
+	@media (max-width: 1023px) {
+		/* bumping up the provider icon sizes so users don't fat-finger the wrong streaming service on their phone */
+		.desktop .provider-btn:not(.provider-text),
+		.minimal .provider-btn:not(.provider-text) {
+			width: 2.75rem;
+			height: 2.75rem;
+			border-radius: 0.5rem;
+		}
+		.desktop .provider-row,
+		.minimal .provider-row {
+			gap: 0.5rem;
+		}
+
+		/* adding generous touch padding to all buttons so they meet mobile ergonomics standards */
+		.desktop .save-btn,
+		.minimal .save-btn,
+		.desktop .preview-btn,
+		.minimal .preview-btn,
+		.desktop .zflix-cta,
+		.minimal .zflix-cta,
+		.desktop .share-vibe-btn,
+		.minimal .share-vibe-btn,
+		.desktop .vibe-miss-btn,
+		.minimal .vibe-miss-btn,
+		.watch-cta {
+			min-height: 44px;
+			padding: 0.625rem 1rem;
+			box-sizing: border-box;
+		}
+		.desktop .provider-btn.provider-text,
+		.minimal .provider-btn.provider-text {
+			min-height: 44px;
+			padding: 0.625rem 1rem;
+		}
+
+		/* adding bottom offset so action buttons float cleanly above the mobile nav bar */
+		.save-fab,
+		.save-fab.minimal-fab {
+			bottom: calc(80px + 1.25rem + env(safe-area-inset-bottom, 0px));
+			min-height: 48px;
+			padding: 0.85rem 1.15rem;
+			font-size: 0.9rem;
+			font-weight: 800;
+			letter-spacing: 0.02em;
+		}
+		.save-fab-label {
+			font-size: 0.82rem;
+			letter-spacing: 0.06em;
+		}
+		.save-fab-title {
+			font-size: 0.75rem;
+		}
+		.save-fab.save-fab-mobile-hide {
+			display: none;
+		}
+		.desktop .result-body,
+		.minimal .min-result {
+			padding-bottom: 5.5rem;
+		}
+		.desktop .rec-title-row,
+		.minimal .rec-title-row {
+			align-items: center;
+		}
+	}
+
 	.share-toast {
 		position: fixed;
+		right: 1.25rem;
 		bottom: 1.25rem;
-		left: 50%;
-		transform: translateX(-50%);
+		left: auto;
 		z-index: 80;
-		padding: 0.55rem 0.9rem;
-		font-size: 0.75rem;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
+		padding: 0.65rem 0.95rem 0.65rem 0.85rem;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		line-height: 1.35;
 		color: #111;
 		background: #fff;
 		border: 2px solid #111;
-		box-shadow: 3px 3px 0 #111;
+		border-left: 6px solid #ff4c00;
+		box-shadow: 4px 4px 0 #111;
 		pointer-events: none;
+		max-width: min(22rem, calc(100vw - 2rem));
+	}
+
+	@media (max-width: 1023px) {
+		.share-toast {
+			left: 50%;
+			right: auto;
+			transform: translateX(-50%);
+			bottom: calc(80px + env(safe-area-inset-bottom, 0px) + 0.75rem);
+		}
 	}
 
 	:global(html[data-ui='minimal']) .share-toast {
 		color: #f2f2f5;
-		background: #1a1a22;
-		border-color: #3a3a48;
-		box-shadow: none;
+		background: #111118;
+		border-color: #111;
+		border-left-color: #ff4c00;
+		box-shadow: 4px 4px 0 #000;
 	}
 
 	@keyframes spin {
@@ -4352,6 +6248,429 @@
 		50% {
 			opacity: 1;
 		}
+	}
+
+	.auth-controls {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+	}
+	.auth-avatar {
+		width: 28px;
+		height: 28px;
+		border-radius: 999px;
+		object-fit: cover;
+	}
+	.auth-name {
+		font-size: 0.75rem;
+		color: #9ca3af;
+		max-width: 7rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.auth-btn {
+		border: 1px solid #333;
+		background: #16161c;
+		color: #f3f4f6;
+		border-radius: 8px;
+		padding: 0.35rem 0.65rem;
+		font: inherit;
+		font-size: 0.75rem;
+		cursor: pointer;
+	}
+	.auth-btn:hover {
+		border-color: #ff4c00;
+	}
+	/* bulletproofing the center alignment so it actually floats in the middle */
+	.login-prompt-backdrop {
+		background: rgba(26, 26, 26, 0.55);
+		align-items: center;
+		justify-content: center;
+	}
+	.login-prompt-backdrop.minimal-backdrop {
+		background: rgba(8, 8, 12, 0.72);
+	}
+	.term-modal {
+		height: fit-content;
+		min-height: 0;
+		max-height: 85vh;
+		width: 100%;
+		max-width: 28rem;
+		flex: none;
+		align-self: center;
+		overflow-y: auto;
+	}
+	.sheet-handle {
+		width: 2.5rem;
+		height: 0.28rem;
+		border-radius: 999px;
+		background: #9ca3af;
+		margin: 0.7rem auto 0.35rem;
+	}
+
+	@media (max-width: 1023px) {
+		.login-prompt-backdrop {
+			align-items: flex-end;
+			justify-content: stretch;
+			padding: 0;
+		}
+		.term-modal {
+			max-width: none;
+			width: 100%;
+			align-self: stretch;
+			margin-top: auto;
+			border-bottom-left-radius: 0;
+			border-bottom-right-radius: 0;
+			max-height: min(88vh, 100%);
+		}
+		.term-modal.modal-desktop,
+		.term-modal.modal-minimal {
+			border-radius: 1.5rem 1.5rem 0 0;
+		}
+		.term-titlebar {
+			display: none;
+		}
+	}
+	/* swapping to rounded corners and sans-serif if the user is on the modern theme */
+	.term-modal.modal-desktop {
+		min-height: 0;
+		background: #ffffff;
+		border: 2px solid #111111;
+		border-radius: 0;
+		color: #111111;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		box-shadow: 4px 4px 0 #111111;
+	}
+	.term-modal.modal-minimal {
+		min-height: 0;
+		background: #16161c;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 1rem;
+		color: #f3f4f6;
+		font-family: 'IBM Plex Sans', system-ui, sans-serif;
+		box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.55);
+	}
+	.term-titlebar {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		height: 28px;
+		padding: 0 0.55rem;
+		background: #1a1a1a;
+		color: #f5f5f5;
+		font-size: 0.72rem;
+	}
+
+	@media (max-width: 1023px) {
+		.term-modal.modal-desktop,
+		.term-modal.modal-minimal {
+			border-radius: 1.5rem 1.5rem 0 0;
+		}
+		.term-titlebar {
+			display: none;
+		}
+	}
+	.term-titlebar .traffic {
+		display: flex;
+		align-items: center;
+		gap: 0.28rem;
+		flex-shrink: 0;
+	}
+	.term-titlebar .dot {
+		width: 9px;
+		height: 9px;
+		padding: 0;
+		border-radius: 50%;
+		border: 1px solid rgba(0, 0, 0, 0.35);
+		appearance: none;
+		display: inline-block;
+	}
+	.term-titlebar button.dot {
+		cursor: pointer;
+	}
+	.term-titlebar .dot.red {
+		background: #ff5f57;
+	}
+	.term-titlebar .dot.yellow {
+		background: #febc2e;
+	}
+	.term-titlebar .dot.green {
+		background: #28c840;
+	}
+	.term-titlebar .titlebar-text {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-weight: 500;
+	}
+	.term-titlebar .titlebar-tag {
+		flex-shrink: 0;
+		padding: 0.1rem 0.35rem;
+		background: #ff4c00;
+		color: #fff;
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		line-height: 1.2;
+	}
+	.term-modal.modal-desktop .term-modal-body {
+		padding: 1.1rem 1.15rem 1.2rem;
+		background: #ffffff;
+	}
+	.term-modal.modal-minimal .term-modal-body {
+		padding: 1.35rem 1.4rem 1.45rem;
+		background: #16161c;
+	}
+	.term-modal.modal-desktop h2 {
+		margin: 0 0 0.35rem;
+		font-size: 1rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: #111;
+	}
+	.term-modal.modal-minimal h2 {
+		margin: 0 0 0.5rem;
+		font-size: 1.15rem;
+		font-weight: 600;
+		letter-spacing: -0.02em;
+		color: #f3f4f6;
+	}
+	.term-modal.modal-desktop p {
+		margin: 0 0 0.95rem;
+		color: #666;
+		font-size: 0.8rem;
+		line-height: 1.45;
+	}
+	.term-modal.modal-minimal p {
+		margin: 0 0 1.1rem;
+		color: #9ca3af;
+		font-size: 0.9rem;
+		line-height: 1.5;
+	}
+	.login-prompt-actions {
+		display: grid;
+		gap: 0.5rem;
+	}
+	.term-btn {
+		appearance: none;
+		cursor: pointer;
+	}
+	.term-modal.modal-desktop .term-btn {
+		border: 2px solid #111;
+		border-radius: 0;
+		background: #fff;
+		color: #111;
+		padding: 0.45rem 0.7rem;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.term-modal.modal-minimal .term-btn {
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		border-radius: 0.5rem;
+		background: rgba(255, 255, 255, 0.06);
+		color: #f3f4f6;
+		padding: 0.65rem 0.85rem;
+		font-family: inherit;
+		font-size: 0.875rem;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		text-transform: none;
+	}
+	.term-modal.modal-desktop .term-btn:hover:not(:disabled) {
+		border-color: #ff4c00;
+		color: #ff4c00;
+	}
+	.term-modal.modal-minimal .term-btn:hover:not(:disabled) {
+		background: rgba(255, 255, 255, 0.1);
+		border-color: rgba(255, 255, 255, 0.2);
+		color: #fff;
+	}
+	.term-modal.modal-minimal .term-btn:focus-visible {
+		outline: 2px solid #8b7cf7;
+		outline-offset: 2px;
+	}
+	.term-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.term-modal.modal-desktop .term-btn.primary {
+		background: #111;
+		color: #fff;
+	}
+	.term-modal.modal-desktop .term-btn.primary:hover:not(:disabled) {
+		background: #ff4c00;
+		border-color: #111;
+		color: #fff;
+	}
+	.term-modal.modal-minimal .term-btn.primary {
+		background: #f3f4f6;
+		border-color: transparent;
+		color: #0e0e12;
+	}
+	.term-modal.modal-minimal .term-btn.primary:hover:not(:disabled) {
+		background: #fff;
+		border-color: transparent;
+		color: #0e0e12;
+	}
+	.term-modal.modal-desktop .term-btn.discord {
+		background: #5865f2;
+		border-color: #111;
+		color: #fff;
+	}
+	.term-modal.modal-desktop .term-btn.discord:hover:not(:disabled) {
+		background: #4752c4;
+		border-color: #111;
+		color: #fff;
+	}
+	.term-modal.modal-minimal .term-btn.discord {
+		background: #5865f2;
+		border-color: transparent;
+		color: #fff;
+	}
+	.term-modal.modal-minimal .term-btn.discord:hover:not(:disabled) {
+		background: #4752c4;
+		border-color: transparent;
+		color: #fff;
+	}
+	.term-btn.already {
+		opacity: 0.5;
+	}
+	.login-cred-form {
+		display: grid;
+		gap: 0.45rem;
+		margin-top: 0.1rem;
+	}
+	.term-modal.modal-desktop .login-cred-form input,
+	.term-modal.modal-desktop .playlist-input {
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.5rem 0.6rem;
+		border: 2px solid #111;
+		border-radius: 0;
+		background: #fff;
+		color: #111;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-size: 0.8rem;
+		box-shadow: none;
+	}
+	.term-modal.modal-minimal .login-cred-form input,
+	.term-modal.modal-minimal .playlist-input {
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.65rem 0.75rem;
+		border: 1px solid rgba(255, 255, 255, 0.18);
+		border-radius: 0.5rem;
+		background: rgba(255, 255, 255, 0.06);
+		color: #f3f4f6;
+		font-family: inherit;
+		font-size: 0.875rem;
+		box-shadow: none;
+	}
+	.term-modal.modal-desktop .login-cred-form input:focus,
+	.term-modal.modal-desktop .playlist-input:focus {
+		outline: none;
+		border-color: #111;
+		box-shadow: 2px 2px 0 #ff4c00;
+	}
+	.term-modal.modal-minimal .login-cred-form input:focus,
+	.term-modal.modal-minimal .playlist-input:focus {
+		outline: none;
+		border-color: rgba(139, 124, 247, 0.65);
+		box-shadow: 0 0 0 3px rgba(139, 124, 247, 0.25);
+	}
+	.term-modal.modal-desktop .auth-link {
+		color: #666;
+		font-size: 0.72rem;
+		text-decoration: none;
+		text-align: center;
+		padding: 0.25rem 0;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+	}
+	.term-modal.modal-desktop .auth-link:hover {
+		color: #ff4c00;
+	}
+	.term-modal.modal-minimal .auth-link {
+		color: #9ca3af;
+		font-size: 0.85rem;
+		text-decoration: none;
+		text-align: center;
+		padding: 0.25rem 0;
+		font-family: inherit;
+	}
+	.term-modal.modal-minimal .auth-link:hover {
+		color: #8b7cf7;
+	}
+
+	.playlist-create {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		margin: 0 0 0.85rem;
+	}
+	.playlist-input {
+		flex: 1;
+		min-width: 0;
+		box-sizing: border-box;
+		padding: 0.4rem 0.55rem;
+		border: 2px solid #111;
+		border-radius: 0;
+		background: #fff;
+		color: #111;
+		font: inherit;
+		font-size: 0.75rem;
+	}
+	.minimal .playlist-input {
+		border: 1px solid rgba(255, 255, 255, 0.18);
+		background: rgba(255, 255, 255, 0.06);
+		color: #f3f4f6;
+		border-radius: 6px;
+	}
+	.playlist-group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+		margin-bottom: 1.1rem;
+		padding-bottom: 0.85rem;
+		border-bottom: 2px solid #111;
+	}
+	.minimal .playlist-group {
+		border-bottom-color: rgba(255, 255, 255, 0.12);
+	}
+	.playlist-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.playlist-title {
+		margin: 0;
+		font-size: 0.82rem;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.playlist-count {
+		font-size: 0.65rem;
+		font-weight: 700;
+		color: #666;
+	}
+	.minimal .playlist-count {
+		color: #9ca3af;
+	}
+	.playlist-empty {
+		margin: 0;
+		font-size: 0.8rem;
+	}
+	.picker-create {
+		margin-top: 0.35rem;
+		flex-direction: column;
+		align-items: stretch;
 	}
 
 	@media (prefers-reduced-motion: reduce) {

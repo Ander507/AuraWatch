@@ -8,6 +8,8 @@ import { fetchTmdbTrailerKey } from '$lib/server/tmdbVideos';
 import { cleanLikeTitle, parseLikeTitle, stripLikeClause } from '$lib/server/likeTitle';
 import { getZflixUrl } from '$lib/watchLinks';
 import { normalizeRegion } from '$lib/regions';
+import { normalizeLanguage } from '$lib/languages';
+import { buildCacheKey, cacheGet, cacheSet } from '$lib/server/apiCache';
 import { lookupItunesTrack, songListenLinks } from '$lib/server/itunesSearch';
 import {
 	decadePromptLabel,
@@ -21,6 +23,7 @@ import {
 	parseNotesWeight
 } from '$lib/server/notesWeight';
 import {
+	isExclusiveFormat,
 	kindLabel,
 	pickManyFromCatalog,
 	seasonInfo,
@@ -71,17 +74,30 @@ import {
 	primaryStoreLink
 } from '$lib/server/igdbSearch';
 import { howManyIgdbCreds } from '$lib/server/igdbAuth';
+import { bookReadLinks, lookupBookOrManga } from '$lib/server/openLibrarySearch';
+import { bggLinks, lookupBggGame } from '$lib/server/bggSearch';
+import { resolveSnackPairing } from '$lib/server/snackPairing';
+import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+import {
+	buildBoardGamesConciergePrompt,
+	buildBooksConciergePrompt,
+	buildFullVibePrompt,
+	parseGeminiBoardRecs,
+	parseGeminiBookRecs,
+	parseGeminiVibeBundle
+} from '$lib/server/extraFormatPrompts';
 
 /** Season count for TV picks — optional hard gate when Series Length is set. */
 async function resolveTvSeasons(
 	tmdbId: number,
 	mediaType: 'movie' | 'tv',
-	seriesLength: SeriesLengthId | null
+	seriesLength: SeriesLengthId | null,
+	language?: string | null
 ): Promise<{ ok: boolean; number_of_seasons: number | null; seasons_label: string | null }> {
 	if (mediaType !== 'tv' || !tmdbId) {
 		return { ok: true, number_of_seasons: null, seasons_label: null };
 	}
-	const count = await fetchTvSeasonCount(tmdbId);
+	const count = await fetchTvSeasonCount(tmdbId, language);
 	if (!seasonCountAllowed(count, seriesLength)) {
 		return { ok: false, number_of_seasons: count, seasons_label: seasonsLabel(count) };
 	}
@@ -98,10 +114,34 @@ function parseOneFormat(raw: any): MediaFormat | null {
 	if (t === 'song' || t === 'songs' || t === 'music' || t === 'track') return 'songs';
 	if (t === 'game' || t === 'games' || t === 'gaming' || t === 'videogame' || t === 'video-game')
 		return 'games';
+	if (
+		t === 'book' ||
+		t === 'books' ||
+		t === 'manga' ||
+		t === 'books-manga' ||
+		t === 'booksmanga'
+	)
+		return 'books';
+	if (
+		t === 'board' ||
+		t === 'boardgame' ||
+		t === 'boardgames' ||
+		t === 'board-games' ||
+		t === 'tabletop'
+	)
+		return 'boardgames';
+	if (
+		t === 'fullvibe' ||
+		t === 'full-vibe' ||
+		t === 'vibe' ||
+		t === 'itinerary' ||
+		t === 'combo'
+	)
+		return 'fullvibe';
 	return null;
 }
 
-/** Prefer body.types[]; fall back to legacy body.type. Empty = all media. Songs/games exclusive. */
+/** Prefer body.types[]; fall back to legacy body.type. Empty = all media. Exclusive lanes win. */
 function normalizeTypes(body: any): MediaFormat[] {
 	const out: MediaFormat[] = [];
 	const seen = new Set<MediaFormat>();
@@ -119,9 +159,11 @@ function normalizeTypes(body: any): MediaFormat[] {
 		push(body.type);
 	}
 
-	if (out.includes('games')) return ['games'];
-	if (out.includes('songs')) return ['songs'];
-	return out.filter((t) => t !== 'songs' && t !== 'games');
+	// exclusive lanes — first one in this priority list wins
+	for (const ex of ['fullvibe', 'boardgames', 'books', 'games', 'songs'] as MediaFormat[]) {
+		if (out.includes(ex)) return [ex];
+	}
+	return out.filter((t) => !isExclusiveFormat(t));
 }
 
 function formatLabel(types: MediaFormat[]): string {
@@ -132,6 +174,9 @@ function formatLabel(types: MediaFormat[]): string {
 			if (t === 'series') return 'TV series';
 			if (t === 'anime') return 'anime';
 			if (t === 'games') return 'games';
+			if (t === 'books') return 'books & manga';
+			if (t === 'boardgames') return 'board games';
+			if (t === 'fullvibe') return 'full vibe itinerary';
 			return 'songs';
 		})
 		.join(' OR ');
@@ -151,6 +196,13 @@ function legacyType(types: MediaFormat[]): SelectedType {
 	if (!types.length) return 'all';
 	if (types.length === 1) return types[0];
 	return 'all';
+}
+
+/** Tell Gemini to write pitches in the user's language when it's not english. */
+function languagePromptLine(language?: string | null): string {
+	const lang = normalizeLanguage(language);
+	if (lang === 'en-US' || lang.startsWith('en')) return '';
+	return `- Response language (HARD): write matchReason / pitches in ${lang}. Keep title + searchQuery as the official localized title when you know it.`;
 }
 
 type GeminiRec = {
@@ -174,18 +226,62 @@ function stripJsonFences(raw: string) {
 	return s;
 }
 
+// gemini keeps putting raw double quotes inside strings and breaking the parser, stripping them here
+function escapeInternalQuotes(jsonish: string): string {
+	let out = '';
+	let inString = false;
+	let escaped = false;
+	for (let i = 0; i < jsonish.length; i++) {
+		const c = jsonish[i];
+		if (escaped) {
+			out += c;
+			escaped = false;
+			continue;
+		}
+		if (c === '\\' && inString) {
+			out += c;
+			escaped = true;
+			continue;
+		}
+		if (c === '"') {
+			if (!inString) {
+				inString = true;
+				out += c;
+			} else {
+				const rest = jsonish.slice(i + 1);
+				if (/^\s*[,:}\]]/.test(rest) || /^\s*$/.test(rest)) {
+					inString = false;
+					out += c;
+				} else {
+					out += '\\"';
+				}
+			}
+			continue;
+		}
+		out += c;
+	}
+	return out;
+}
+
 // gemini json is haunted. we try a few times before giving up
 function repairJsonText(raw: string): string {
 	let s = stripJsonFences(raw);
+	s = s.replace(/^\uFEFF/, '');
 	// curly quotes from copy-paste brains
 	s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
 	s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
 	s = s.replace(/,\s*([}\]])/g, '$1'); // trailing commas my beloved
+	s = escapeInternalQuotes(s);
 	return s;
 }
 
 function safeParseJson(raw: string): any {
-	const tries = [repairJsonText(raw), stripJsonFences(raw), (raw || '').trim()];
+	const tries = [
+		repairJsonText(raw),
+		stripJsonFences(raw),
+		escapeInternalQuotes(stripJsonFences(raw)),
+		(raw || '').trim()
+	];
 	let lastErr: any = null;
 	for (const t of tries) {
 		if (!t) continue;
@@ -194,12 +290,6 @@ function safeParseJson(raw: string): any {
 		} catch (e) {
 			lastErr = e;
 		}
-	}
-	// one more slap
-	try {
-		return JSON.parse(repairJsonText(raw).replace(/^\uFEFF/, '').replace(/,\s*([}\]])/g, '$1'));
-	} catch {
-		/* nah */
 	}
 	throw lastErr || new Error('model spat out unparseable junk');
 }
@@ -212,6 +302,7 @@ function buildMusicConciergePrompt(opts: {
 	notesWeight?: number;
 	maturity?: MaturityLevel | null;
 	antiVibe?: string;
+	language?: string;
 }) {
 	const genres = opts.genres.join(', ') || 'None';
 	const prompt = opts.prompt || '';
@@ -271,6 +362,7 @@ USER INPUT:
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${eraBlock}
 ${maturityBlock}
 ${antiBlock}${likeBlock}
+${languagePromptLine(opts.language)}
 ${weightingBlock}
 
 STRICT RULES:
@@ -331,6 +423,7 @@ function buildGamesConciergePrompt(opts: {
 	priceRange?: PriceRangeId | null;
 	antiVibe?: string;
 	platforms?: string[];
+	language?: string;
 }) {
 	const genres = opts.genres.join(', ') || 'None';
 	const prompt = opts.prompt || '';
@@ -397,6 +490,7 @@ ${maturityBlock}
 ${priceBlock}
 ${platformBlock}
 ${antiBlock}${likeBlock}
+${languagePromptLine(opts.language)}
 ${weightingBlock}
 
 VIBE TESTS (apply silently):
@@ -524,6 +618,7 @@ function buildConciergePrompt(opts: {
 	maturity?: MaturityLevel | null;
 	seriesLength?: SeriesLengthId | null;
 	antiVibe?: string;
+	language?: string;
 }) {
 	const type = formatLabel(opts.types);
 	const allowed = allowedMediaTypes(opts.types);
@@ -595,6 +690,7 @@ ${maturityLine}
 ${seriesLengthLine}
 ${antiBlock}
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${likeBlock}
+${languagePromptLine(opts.language)}
 ${weightingBlock}
 
 CHAIN OF THOUGHT (do this silently before answering — do not output the reasoning):
@@ -736,6 +832,23 @@ export const POST: RequestHandler = async ({ request }) => {
 	const selectedTypes = normalizeTypes(body);
 	const isSongs = selectedTypes.length === 1 && selectedTypes[0] === 'songs';
 	const isGames = selectedTypes.length === 1 && selectedTypes[0] === 'games';
+	const isBooks = selectedTypes.length === 1 && selectedTypes[0] === 'books';
+	const isBoardGames = selectedTypes.length === 1 && selectedTypes[0] === 'boardgames';
+	const isFullVibe = selectedTypes.length === 1 && selectedTypes[0] === 'fullvibe';
+
+	// parking board game picks until the bgg token actually clears review
+	if (isBoardGames && BOARD_GAMES_COMING_SOON) {
+		return json(
+			{
+				ok: false,
+				comingSoon: true,
+				error: BOARD_GAMES_SOON_COPY.title,
+				message: BOARD_GAMES_SOON_COPY.body
+			},
+			{ status: 503 }
+		);
+	}
+
 	const selectedType = legacyType(selectedTypes);
 	const decade = parseDecade(body.decade ?? body.era ?? body.yearDecade);
 	const maturity = parseMaturity(
@@ -763,6 +876,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		body.antiVibe ?? body.anti_vibe ?? body.exclude ?? body.excludeVibe
 	);
 	const region = normalizeRegion(body.region);
+	const language = normalizeLanguage(body.language ?? body.lang ?? body.locale);
 
 	const likeTitlesRaw: string[] = [];
 	if (Array.isArray(body.likeTitles)) {
@@ -798,6 +912,32 @@ export const POST: RequestHandler = async ({ request }) => {
 		throw error(400, 'pick a type, some genres, a like-title, or type a vibe prompt');
 	}
 
+	// cache this so we don't nuke our API limits and keep the UI snappy
+	const cacheKey = buildCacheKey('recommend', {
+		types: selectedTypes,
+		genres: selectedGenres,
+		prompt: vibePrompt,
+		antiVibe,
+		likes: likeTitles,
+		notesWeight,
+		region,
+		language,
+		decade: decade?.id || null,
+		maturity,
+		priceRange,
+		platforms: targetPlatforms,
+		seriesLength
+	});
+	const cached = await cacheGet<Record<string, unknown>>(cacheKey);
+	if (cached && cached.ok) {
+		return json({ ...cached, fromCache: true });
+	}
+
+	const remember = async (payload: Record<string, unknown>) => {
+		await cacheSet(cacheKey, payload);
+		return json(payload);
+	};
+
 	const secretHaystack = [vibePrompt, notesOnly, ...likeTitles, ...selectedGenres].join(' ');
 
 	// 🤫 Songs: Surron / Talaria → only On My Own by Kyle The Hooligan
@@ -809,7 +949,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			likeTitle: likeLabel || 'Sur Ronster',
 			likeTitles: likeTitles.length ? likeTitles : ['Sur Ronster']
 		};
-		return json({
+		return remember({
 			ok: true,
 			mocked: false,
 			mode: 'songs-secret',
@@ -829,11 +969,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// 🤫 Movies/TV: surronster vibe → newest @surronster uploads
-	if (!isSongs && !isGames && isSurronsterVibeSecret(secretHaystack)) {
+	if (!isSongs && !isGames && !isBooks && !isBoardGames && !isFullVibe && isSurronsterVibeSecret(secretHaystack)) {
 		const vids = await fetchSurronsterNewest(REC_LIMIT);
 		if (!vids.length) throw error(502, 'could not load Sur Ronster videos');
 		const recommendations = surronsterVidRecommendations(vids);
-		return json({
+		return remember({
 			ok: true,
 			mocked: false,
 			mode: 'surronster',
@@ -865,7 +1005,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			decade,
 			notesWeight,
 			maturity,
-			antiVibe
+			antiVibe,
+			language
 		});
 
 		try {
@@ -919,7 +1060,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				});
 			}
 
-			return json({
+			return remember({
 				ok: true,
 				mocked: false,
 				mode: 'songs',
@@ -963,7 +1104,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			maturity,
 			priceRange,
 			antiVibe,
-			platforms: targetPlatforms
+			platforms: targetPlatforms,
+			language
 		});
 		const priceLabel = priceRangeBadge(priceRange);
 
@@ -1061,7 +1203,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				throw new Error('no games passed IGDB lookup / maturity gate');
 			}
 
-			return json({
+			return remember({
 				ok: true,
 				mocked: false,
 				mode: 'games',
@@ -1086,6 +1228,368 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
+	// books & manga = gemini titles → open library covers (jikan/anilist if manga blanks)
+	if (isBooks) {
+		if (howManyKeysWeGot() <= 0) {
+			throw error(503, 'book recommendations need GEMINI_API_KEYS configured');
+		}
+
+		const booksPrompt = buildBooksConciergePrompt({
+			genres: selectedGenres,
+			prompt: notesOnly,
+			likeTitles,
+			decade,
+			notesWeight,
+			maturity,
+			antiVibe,
+			language
+		});
+
+		try {
+			const gemini = await callGeminiFlash(booksPrompt, { json: true, maxOutputTokens: 3072 });
+			let bookRecs;
+			try {
+				bookRecs = parseGeminiBookRecs(gemini.text);
+			} catch (parseErr: any) {
+				console.error('book json go boom', parseErr?.message || parseErr);
+				throw new Error('books model returned bad JSON — try again');
+			}
+			if (!bookRecs.length) throw new Error('gemini returned no books');
+
+			const recommendations = [];
+			for (const rec of bookRecs) {
+				const hit = await lookupBookOrManga({
+					searchQuery: rec.searchQuery || rec.title,
+					title: rec.title,
+					hint: rec.mediaType
+				});
+				const title = hit?.title || rec.title;
+				const author = hit?.author || rec.author;
+				const links = hit
+					? bookReadLinks(hit)
+					: [
+							{
+								name: 'Open Library',
+								url: `https://openlibrary.org/search?q=${encodeURIComponent(rec.searchQuery || rec.title)}`,
+								logo: null as string | null
+							}
+						];
+
+				recommendations.push({
+					title,
+					artist: author,
+					cover: hit?.coverUrl || '',
+					genres: rec.actualGenres,
+					pitch: rec.matchReason,
+					mediaType: hit?.kind === 'manga' || rec.mediaType === 'Manga' ? 'Manga' : 'Book',
+					seasonInfo: hit?.year || rec.releaseYear || undefined,
+					releaseYear: hit?.year || rec.releaseYear || undefined,
+					searchQuery: rec.searchQuery,
+					providers: links,
+					watch_link: links[0]?.url || null,
+					listen_url: links[0]?.url || null,
+					likeTitle: likeLabel || undefined,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					kind: 'book' as const,
+					source: hit?.source
+				});
+				if (recommendations.length >= REC_LIMIT) break;
+			}
+
+			if (!recommendations.length) throw new Error('no books resolved');
+
+			return remember({
+				ok: true,
+				mocked: false,
+				mode: 'books',
+				params: {
+					type: selectedType,
+					types: selectedTypes,
+					decade: decade?.id || null,
+					maturity,
+					notesWeight,
+					userGenres: selectedGenres,
+					prompt: vibePrompt,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					language
+				},
+				recommendation: recommendations[0],
+				recommendations
+			});
+		} catch (e: any) {
+			console.error('book recommend failed', e?.message || e);
+			throw error(502, e?.message || 'book recommendation failed');
+		}
+	}
+
+	// board games = gemini → bgg xml search/thing for box art
+	if (isBoardGames) {
+		if (howManyKeysWeGot() <= 0) {
+			throw error(503, 'board game recommendations need GEMINI_API_KEYS configured');
+		}
+
+		const playerCount = (body.playerCount || body.players || '').toString().trim();
+		const complexity = (body.complexity || body.weight || '').toString().trim();
+
+		const boardPrompt = buildBoardGamesConciergePrompt({
+			genres: selectedGenres,
+			prompt: notesOnly,
+			likeTitles,
+			decade,
+			notesWeight,
+			maturity,
+			antiVibe,
+			language,
+			playerCount: playerCount || undefined,
+			complexity: complexity || undefined
+		});
+
+		try {
+			// one retry if gemini hands us broken json after the repair pass
+			let boardRecs: ReturnType<typeof parseGeminiBoardRecs> = [];
+			let parseFailedTwice = false;
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const gemini = await callGeminiFlash(boardPrompt, {
+					json: true,
+					maxOutputTokens: 3072
+				});
+				try {
+					// making sure we actually use the repair pass for board games so it stops exploding
+					boardRecs = parseGeminiBoardRecs(gemini.text);
+					parseFailedTwice = false;
+					break;
+				} catch (parseErr: any) {
+					console.error(
+						'board json go boom',
+						attempt === 0 ? '(retrying once)' : '(gave up)',
+						parseErr?.message || parseErr
+					);
+					if (attempt === 0) continue;
+					parseFailedTwice = true;
+				}
+			}
+			if (parseFailedTwice) {
+				throw new Error('board games model returned bad JSON — try again');
+			}
+			if (!boardRecs.length) throw new Error('gemini returned no board games');
+
+			const recommendations = [];
+			for (const rec of boardRecs) {
+				const hit = await lookupBggGame({
+					searchQuery: rec.searchQuery || rec.title,
+					title: rec.title,
+					year: rec.releaseYear
+				});
+				const title = hit?.title || rec.title;
+				const cover = hit?.coverUrl || hit?.image || hit?.poster_path || '';
+				const year = hit?.year || hit?.release_date || rec.releaseYear || undefined;
+				const rating = hit?.vote_average ?? hit?.rating ?? undefined;
+				const pitch = rec.matchReason || hit?.overview || hit?.description || '';
+				const links = hit ? bggLinks(hit) : [];
+				const players =
+					hit?.minPlayers != null && hit?.maxPlayers != null
+						? `${hit.minPlayers}–${hit.maxPlayers} players`
+						: rec.playerCount || undefined;
+
+				// normalizing the data to look exactly like a movie or video game result
+				recommendations.push({
+					title,
+					cover,
+					poster_path: cover || null,
+					image: cover || null,
+					genres: rec.actualGenres,
+					pitch,
+					overview: pitch,
+					description: hit?.description || pitch,
+					mediaType: 'Board Game',
+					format: hit?.format || 'Board Games',
+					seasonInfo: year,
+					release_date: year,
+					releaseYear: year,
+					year,
+					rating,
+					vote_average: rating,
+					searchQuery: rec.searchQuery,
+					platforms: players ? [players] : undefined,
+					complexity: rec.complexity || undefined,
+					playingTime: hit?.playingTime || undefined,
+					providers: links,
+					storeLinks: links.map((l) => ({
+						platform: l.name,
+						url: l.url,
+						store: l.name
+					})),
+					watch_link: hit?.bggUrl || links[0]?.url || null,
+					listen_url: hit?.bggUrl || null,
+					bgg_id: hit?.id,
+					likeTitle: likeLabel || undefined,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					kind: 'boardgame' as const
+				});
+				if (recommendations.length >= REC_LIMIT) break;
+			}
+
+			if (!recommendations.length) throw new Error('no board games resolved from BGG');
+
+			return remember({
+				ok: true,
+				mocked: false,
+				mode: 'boardgames',
+				params: {
+					type: selectedType,
+					types: selectedTypes,
+					decade: decade?.id || null,
+					maturity,
+					notesWeight,
+					userGenres: selectedGenres,
+					prompt: vibePrompt,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					playerCount: playerCount || undefined,
+					complexity: complexity || undefined,
+					language
+				},
+				recommendation: recommendations[0],
+				recommendations
+			});
+		} catch (e: any) {
+			console.error('board game recommend failed', e?.message || e);
+			throw error(502, e?.message || 'board game recommendation failed');
+		}
+	}
+
+	// full vibe itinerary — one watch + one listen + one snack, same mood
+	if (isFullVibe) {
+		if (howManyKeysWeGot() <= 0) {
+			throw error(503, 'full vibe needs GEMINI_API_KEYS configured');
+		}
+		if (!vibePrompt && !selectedGenres.length) {
+			throw error(400, 'drop a vibe note for Full Vibe (e.g. rainy sunday cozy)');
+		}
+
+		const vibeBundlePrompt = buildFullVibePrompt({
+			prompt: notesOnly || vibePrompt || selectedGenres.join(', '),
+			genres: selectedGenres,
+			antiVibe,
+			language,
+			maturity
+		});
+
+		try {
+			const gemini = await callGeminiFlash(vibeBundlePrompt, {
+				json: true,
+				maxOutputTokens: 2048
+			});
+			let bundle;
+			try {
+				bundle = parseGeminiVibeBundle(gemini.text);
+			} catch (parseErr: any) {
+				console.error('full vibe json go boom', parseErr?.message || parseErr);
+				throw new Error('full vibe model returned bad JSON — try again');
+			}
+
+			const tmdb = await searchTmdbPoster({
+				searchQuery: bundle.watch.searchQuery || bundle.watch.title,
+				releaseYear: bundle.watch.releaseYear,
+				titleFallback: bundle.watch.title,
+				mediaTypeHint: bundle.watch.mediaType,
+				language
+			});
+			const tmdbId = tmdb?.id ?? 0;
+			const tmdbKind = tmdb?.mediaType ?? mediaTypeToTmdb(bundle.watch.mediaType);
+			const watch =
+				tmdbId > 0
+					? await fetchWatchProviders({
+							tmdbId,
+							mediaType: tmdbKind,
+							region,
+							title: bundle.watch.title
+						})
+					: { region, providers: [], watchLink: null };
+			const trailerKey =
+				tmdbId > 0
+					? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind, language })
+					: null;
+
+			const track = await lookupItunesTrack(bundle.music.searchQuery);
+			const musicTitle = track?.title || bundle.music.title;
+			const musicArtist = track?.artist || bundle.music.artist;
+			const listen = songListenLinks({
+				title: musicTitle,
+				artist: musicArtist,
+				appleUrl: track?.appleUrl
+			});
+
+			const snack = await resolveSnackPairing({
+				name: bundle.snack.name,
+				pitch: bundle.snack.pitch,
+				kind: bundle.snack.kind
+			});
+
+			const packageRec = {
+				title: bundle.vibeLabel || 'Full Vibe Package',
+				cover: tmdb?.posterUrl || track?.cover || snack.thumb || '',
+				pitch: `Your night-in starter pack for “${notesOnly || vibePrompt}”.`,
+				mediaType: 'Vibe Package',
+				kind: 'vibe' as const,
+				vibeLabel: bundle.vibeLabel || 'Full Vibe',
+				watch: {
+					title: tmdb?.title || bundle.watch.title,
+					cover: tmdb?.posterUrl || '',
+					coverFallbacks: tmdb?.fallbackUrls || [],
+					pitch: bundle.watch.matchReason,
+					mediaType: bundle.watch.mediaType,
+					seasonInfo: bundle.watch.releaseYear || tmdb?.year || undefined,
+					rating: tmdb?.rating ?? undefined,
+					providers: watch.providers,
+					watch_link: watch.watchLink,
+					trailer_youtube_key: trailerKey || undefined,
+					tmdb_id: tmdbId || undefined,
+					kind: 'media' as const
+				},
+				music: {
+					title: musicTitle,
+					artist: musicArtist,
+					cover: track?.cover || '',
+					pitch: bundle.music.matchReason,
+					mediaType: 'Song',
+					preview_url: track?.previewUrl || undefined,
+					listen_url: listen[0]?.url || undefined,
+					providers: listen,
+					kind: 'song' as const
+				},
+				snack: {
+					title: snack.name,
+					cover: snack.thumb || '',
+					pitch: snack.pitch,
+					mediaType: snack.kind === 'drink' ? 'Drink' : 'Snack',
+					watch_link: snack.recipeUrl,
+					instructions: snack.instructions || undefined,
+					kind: 'snack' as const
+				}
+			};
+
+			return remember({
+				ok: true,
+				mocked: false,
+				mode: 'fullvibe',
+				params: {
+					type: selectedType,
+					types: selectedTypes,
+					maturity,
+					userGenres: selectedGenres,
+					prompt: vibePrompt,
+					language,
+					region
+				},
+				recommendation: packageRec,
+				recommendations: [packageRec]
+			});
+		} catch (e: any) {
+			console.error('full vibe failed', e?.message || e);
+			throw error(502, e?.message || 'full vibe recommendation failed');
+		}
+	}
+
 	// —— Similar-to path: TMDB recommendations/similar ——
 	// Skip when Notes are present and user weighted Notes over Similar-to (slider ≥ 60)
 	const preferNotesOverSimilar =
@@ -1100,7 +1604,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				notes: notesOnly,
 				limit: maturity && maturity !== 'mature' ? Math.min(REC_LIMIT + 5, 10) : REC_LIMIT,
 				yearFrom: decade?.yearFrom ?? null,
-				yearTo: decade?.yearTo ?? null
+				yearTo: decade?.yearTo ?? null,
+				language
 			});
 
 			if (similars.length) {
@@ -1127,7 +1632,8 @@ export const POST: RequestHandler = async ({ request }) => {
 						const seasons = await resolveTvSeasons(
 							similar.id,
 							similar.mediaType,
-							seriesLength
+							seriesLength,
+							language
 						);
 						if (!seasons.ok) continue;
 
@@ -1139,7 +1645,8 @@ export const POST: RequestHandler = async ({ request }) => {
 						});
 						const trailerKey = await fetchTmdbTrailerKey({
 							tmdbId: similar.id,
-							mediaType: similar.mediaType
+							mediaType: similar.mediaType,
+							language
 						});
 						const mediaType = mediaLabelFromTmdb(similar.mediaType, selectedTypes);
 						const searchQuery = similar.year
@@ -1178,7 +1685,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					}
 
 					if (recommendations.length) {
-						return json({
+						return remember({
 							ok: true,
 							mocked: false,
 							mode: 'similar',
@@ -1224,7 +1731,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				notesWeight,
 				maturity,
 				seriesLength,
-				antiVibe
+				antiVibe,
+				language
 			});
 			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 3072 });
 			const parsedRecs = parseGeminiRecs(gemini.text);
@@ -1241,7 +1749,8 @@ export const POST: RequestHandler = async ({ request }) => {
 					searchQuery: rec.searchQuery || rec.title,
 					releaseYear: rec.releaseYear,
 					titleFallback: rec.title,
-					mediaTypeHint: rec.mediaType
+					mediaTypeHint: rec.mediaType,
+					language
 				});
 				const tmdbId = tmdb?.id ?? 0;
 				const tmdbKind = tmdb?.mediaType ?? mediaTypeToTmdb(rec.mediaType);
@@ -1255,7 +1764,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						: { ok: true, certification: null as string | null };
 				if (!gate.ok) continue;
 
-				const seasons = await resolveTvSeasons(tmdbId, tmdbKind, seriesLength);
+				const seasons = await resolveTvSeasons(tmdbId, tmdbKind, seriesLength, language);
 				if (!seasons.ok) continue;
 
 				const watch =
@@ -1269,11 +1778,11 @@ export const POST: RequestHandler = async ({ request }) => {
 						: { region, providers: [], watchLink: null };
 				const trailerKey =
 					tmdbId > 0
-						? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind })
+						? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind, language })
 						: null;
 
 				enriched.push({
-					title: rec.title,
+					title: tmdb?.title || rec.title,
 					cover: tmdb?.posterUrl || '',
 					coverFallbacks: tmdb?.fallbackUrls || [],
 					genres: rec.actualGenres,
@@ -1301,7 +1810,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			const recommendations = enriched;
 			if (!recommendations.length) throw new Error('all gemini picks failed maturity gate');
 
-			return json({
+			return remember({
 				ok: true,
 				mocked: false,
 				mode: likeTitles.length ? 'gemini-like' : 'gemini',
@@ -1373,7 +1882,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				searchQuery: hit.title,
 				releaseYear: String(hit.year),
 				titleFallback: hit.title,
-				mediaTypeHint: kindLabel(hit.kind)
+				mediaTypeHint: kindLabel(hit.kind),
+				language
 			});
 			const tmdbId = tmdb?.id || hit.tmdbId;
 			const tmdbKind = tmdb?.mediaType || hit.mediaType;
@@ -1387,7 +1897,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			if (!gate.ok) continue;
 
 			const seasons = tmdbId
-				? await resolveTvSeasons(tmdbId, tmdbKind, seriesLength)
+				? await resolveTvSeasons(tmdbId, tmdbKind, seriesLength, language)
 				: {
 						ok: seasonCountAllowed(hit.seasons || null, seriesLength),
 						number_of_seasons: hit.seasons > 0 ? hit.seasons : null,
@@ -1402,7 +1912,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				title: hit.title
 			});
 			const trailerKey = tmdbId
-				? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind })
+				? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind, language })
 				: null;
 			const pitch = likeTitles.length
 				? `If you liked ${likeLabel}, ${hit.title} is a close neighbor in our local catalog.`
@@ -1410,8 +1920,8 @@ export const POST: RequestHandler = async ({ request }) => {
 					? `Because you asked for “${vibePrompt.slice(0, 80)}”, ${hit.title} fits from our catalog.`
 					: `${hit.title} fits your ${formatLabel(selectedTypes)} filters.`;
 
-			catalogEnriched.push({
-				title: hit.title,
+				catalogEnriched.push({
+					title: tmdb?.title || hit.title,
 				cover: tmdb?.posterUrl || hit.cover,
 				coverFallbacks: [
 					...(tmdb?.fallbackUrls || []),
@@ -1446,7 +1956,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const recommendations = catalogEnriched.slice(0, REC_LIMIT);
 
-	return json({
+	return remember({
 		ok: true,
 		mocked: true,
 		mode: likeTitles.length ? 'catalog-like' : 'catalog',
@@ -1470,7 +1980,7 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = async () => {
 	return json({
 		ok: true,
-		msg: 'POST { types, genres, prompt, antiVibe, likeTitles, region, decade, maturity, priceRange, platforms, seriesLength, notesWeight }',
+		msg: 'POST { types, genres, prompt, antiVibe, likeTitles, region, language, decade, maturity, priceRange, platforms, seriesLength, notesWeight }',
 		keys_loaded: howManyKeysWeGot(),
 		igdb: howManyIgdbCreds() > 0
 	});

@@ -26,6 +26,12 @@ async function tmdbJson(url: string, headers: Record<string, string>) {
 	return cachedJsonFetch(url, { headers }, { ttlMs: 15 * 60 * 1000 });
 }
 
+/** TMDB wants en-US style tags; fall back hard to english if someone passes garbage. */
+function tmdbLang(raw?: string | null): string {
+	const s = String(raw || '').trim();
+	return s || 'en-US';
+}
+
 export function tmdbImageUrl(
 	path: string | null | undefined,
 	size: 'w92' | 'w500' | 'w780' = 'w500'
@@ -139,17 +145,21 @@ function uniqueUrls(...urls: Array<string | null | undefined>): string[] {
  */
 export async function resolveTmdbArtwork(
 	id: number,
-	mediaType: 'movie' | 'tv'
+	mediaType: 'movie' | 'tv',
+	language?: string | null
 ): Promise<{ posterUrl: string | null; fallbackUrls: string[] }> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey || !id) return { posterUrl: null, fallbackUrls: [] };
 
+	const lang = tmdbLang(language);
+	const langShort = lang.split('-')[0] || 'en';
 	const posters: string[] = [];
 	const backdrops: string[] = [];
 
 	try {
+		// prefer posters in the user's lang, then untagged, then english
 		const imgUrl = withKey(
-			`https://api.themoviedb.org/3/${mediaType}/${id}/images?include_image_language=en,null`,
+			`https://api.themoviedb.org/3/${mediaType}/${id}/images?include_image_language=${langShort},en,null`,
 			apiKey,
 			useBearer
 		);
@@ -174,7 +184,7 @@ export async function resolveTmdbArtwork(
 	if (!posters.length) {
 		try {
 			const detailUrl = withKey(
-				`https://api.themoviedb.org/3/${mediaType}/${id}?language=en-US`,
+				`https://api.themoviedb.org/3/${mediaType}/${id}?language=${encodeURIComponent(lang)}`,
 				apiKey,
 				useBearer
 			);
@@ -244,12 +254,14 @@ async function searchKindResults(opts: {
 	apiKey: string;
 	useBearer: boolean;
 	headers: Record<string, string>;
+	language?: string | null;
 }): Promise<ScoredResult[]> {
 	const { title, year, kind, apiKey, useBearer, headers } = opts;
 	const params = new URLSearchParams({
 		query: title,
 		include_adult: 'false',
-		language: 'en-US',
+		// hit tmdb for the posters. passing the lang code here so it doesn't default to english
+		language: tmdbLang(opts.language),
 		page: '1'
 	});
 	if (year) {
@@ -321,12 +333,12 @@ function urlsFromHit(hit: ScoredResult, extras: string[] = []): {
 	};
 }
 
-async function enrichHitArt(hit: ScoredResult): Promise<TmdbHit> {
+async function enrichHitArt(hit: ScoredResult, language?: string | null): Promise<TmdbHit> {
 	let { posterUrl, fallbackUrls } = urlsFromHit(hit);
 
 	// Only hit /images + IMDb find when search returned no usable art
 	if (!posterUrl) {
-		const art = await resolveTmdbArtwork(hit.id, hit.mediaType);
+		const art = await resolveTmdbArtwork(hit.id, hit.mediaType, language);
 		const merged = uniqueUrls(art.posterUrl, ...art.fallbackUrls, ...fallbackUrls);
 		posterUrl = merged[0] || null;
 		fallbackUrls = merged.slice(1);
@@ -354,10 +366,13 @@ export async function searchTmdbPoster(opts: {
 	/** Bare title fallback when searchQuery is noisy (soundtrack notes, etc.) */
 	titleFallback?: string | null;
 	mediaTypeHint?: string | null; // "TV Series" | "Movie" | "Anime Series"
+	/** TMDB language tag e.g. es-ES — titles/overviews come back localized */
+	language?: string | null;
 }): Promise<TmdbHit | null> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	if (!apiKey) return null;
 
+	const language = tmdbLang(opts.language);
 	const parsed = parseSearchQuery(opts.searchQuery, opts.releaseYear);
 	const fallbackTitle = cleanTitleNoise(String(opts.titleFallback || ''));
 	const year =
@@ -396,7 +411,8 @@ export async function searchTmdbPoster(opts: {
 						kind,
 						apiKey,
 						useBearer,
-						headers
+						headers,
+						language
 					});
 					if (!scored.length) continue;
 
@@ -409,14 +425,14 @@ export async function searchTmdbPoster(opts: {
 						.slice(0, 3)
 						.map((c) => tmdbImageUrl(c.poster_path, 'w500'));
 
-					const hit = await enrichHitArt(best);
+					const hit = await enrichHitArt(best, language);
 					hit.fallbackUrls = uniqueUrls(...hit.fallbackUrls, ...siblingPosters);
 
 					// If we still have no art, try the next candidate with a poster
 					if (!hit.posterUrl) {
 						const alt = scored.find((c) => c.id !== best.id && c.poster_path);
 						if (alt) {
-							const altHit = await enrichHitArt(alt);
+							const altHit = await enrichHitArt(alt, language);
 							if (altHit.posterUrl) return altHit;
 						}
 						continue;
@@ -436,7 +452,7 @@ export async function searchTmdbPoster(opts: {
 			const params = new URLSearchParams({
 				query: title,
 				include_adult: 'false',
-				language: 'en-US',
+				language,
 				page: '1'
 			});
 			const url = withKey(
@@ -476,7 +492,7 @@ export async function searchTmdbPoster(opts: {
 				scored.sort((a, b) => b.score - a.score);
 				const best = pickBestWithArt(scored);
 				if (best) {
-					const hit = await enrichHitArt(best);
+					const hit = await enrichHitArt(best, language);
 					if (hit.posterUrl) return hit;
 				}
 			}
@@ -503,7 +519,7 @@ export type TmdbSearchResult = {
  */
 export async function searchTmdbTitles(
 	query: string,
-	opts?: { limit?: number }
+	opts?: { limit?: number; language?: string | null }
 ): Promise<{ results: TmdbSearchResult[]; total: number }> {
 	const { apiKey, useBearer, headers } = authHeaders();
 	const q = String(query || '').trim();
@@ -513,7 +529,7 @@ export async function searchTmdbTitles(
 	const params = new URLSearchParams({
 		query: q,
 		include_adult: 'false',
-		language: 'en-US',
+		language: tmdbLang(opts?.language),
 		page: '1'
 	});
 

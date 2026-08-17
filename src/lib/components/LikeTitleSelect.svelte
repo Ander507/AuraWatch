@@ -3,16 +3,19 @@
 	import { tick } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
+	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
 
 	export type LikeHit = {
-		id: number;
-		mediaType: 'movie' | 'tv' | 'song' | 'artist' | 'game';
+		id: number | string;
+		mediaType: 'movie' | 'tv' | 'song' | 'artist' | 'game' | 'book' | 'manga' | 'boardgame';
 		title: string;
 		subtitle?: string | null;
 		posterUrl: string | null;
+		image?: string | null;
+		poster_path?: string | null;
 		year: string | null;
 		rating: number | null;
-		kindLabel: 'MOVIE' | 'TV' | 'SONG' | 'ARTIST' | 'GAME';
+		kindLabel: 'MOVIE' | 'TV' | 'SONG' | 'ARTIST' | 'GAME' | 'BOOK' | 'MANGA' | 'BOARD';
 	};
 
 	let {
@@ -21,14 +24,16 @@
 		id,
 		variant = 'dark',
 		max = 5,
-		kind = 'media'
+		kind = 'media',
+		language = 'en-US'
 	}: {
 		values?: string[];
 		disabled?: boolean;
 		id?: string;
 		variant?: 'dark' | 'desktop';
 		max?: number;
-		kind?: 'media' | 'music' | 'games';
+		kind?: 'media' | 'music' | 'games' | 'books' | 'boardgames';
+		language?: string;
 	} = $props();
 
 	let open = $state(false);
@@ -40,11 +45,15 @@
 	let rootEl = $state<HTMLDivElement | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let listEl = $state<HTMLUListElement | null>(null);
-	let brokenPosters = $state(new SvelteSet<string>());
+	let brokenPosters = new SvelteSet<string>();
+	let loadedPosters = new SvelteSet<string>();
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let abort: AbortController | null = null;
 
-	const SEARCH_CACHE_PREFIX = 'aurawatch_search_v1:';
+	// bgg api is still pending approval, throwing up a coming soon banner so it doesn't break the ui
+	let boardSoon = $derived(kind === 'boardgames' && BOARD_GAMES_COMING_SOON);
+
+	const SEARCH_CACHE_PREFIX = 'aurawatch_search_v2:';
 	const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 
 	let atMax = $derived(values.length >= max);
@@ -74,8 +83,12 @@
 		brokenPosters.add(posterKey(hit));
 	}
 
+	function posterOf(hit: LikeHit): string | null {
+		return hit.posterUrl || hit.image || hit.poster_path || null;
+	}
+
 	function showPoster(hit: LikeHit) {
-		return Boolean(hit.posterUrl) && !brokenPosters.has(posterKey(hit));
+		return Boolean(posterOf(hit)) && !brokenPosters.has(posterKey(hit));
 	}
 
 	function readSearchCache(key: string): { results: LikeHit[]; total: number } | null {
@@ -117,7 +130,7 @@
 			return;
 		}
 
-		const cacheKey = `${kind}|${trimmed.toLowerCase()}`;
+		const cacheKey = `${kind}|${language}|${trimmed.toLowerCase()}`;
 		const cached = readSearchCache(cacheKey);
 		if (cached) {
 			results = cached.results.filter((h) => {
@@ -137,16 +150,34 @@
 
 		try {
 			const res = await fetch(
-				`/api/search?q=${encodeURIComponent(trimmed)}&limit=8&kind=${kind === 'music' ? 'music' : kind === 'games' ? 'games' : 'media'}`,
+				`/api/search?q=${encodeURIComponent(trimmed)}&limit=8&kind=${
+					kind === 'music'
+						? 'music'
+						: kind === 'games'
+							? 'games'
+							: kind === 'books'
+								? 'books'
+								: kind === 'boardgames'
+									? 'boardgames'
+									: 'media'
+				}&language=${encodeURIComponent(language)}`,
 				{ signal: ctrl.signal }
 			);
 			const data = await res.json().catch(() => ({}));
 			if (ctrl.signal.aborted) return;
-			const raw: LikeHit[] = Array.isArray(data?.results) ? data.results : [];
-			writeSearchCache(cacheKey, {
-				results: raw,
-				total: typeof data?.total === 'number' ? data.total : raw.length
-			});
+			const raw: LikeHit[] = (Array.isArray(data?.results) ? data.results : []).map(
+				(h: LikeHit) => ({
+					...h,
+					posterUrl: posterOf(h)
+				})
+			);
+			// only stash real hits — empty "no titles" spam was getting stuck in localStorage
+			if (raw.length) {
+				writeSearchCache(cacheKey, {
+					results: raw,
+					total: typeof data?.total === 'number' ? data.total : raw.length
+				});
+			}
 			// skip stuff already picked (check both chip label + bare title, whatever)
 			results = raw.filter((h) => {
 				const label = chipTxt(h);
@@ -166,7 +197,7 @@
 
 	function scheduleSearch(q: string) {
 		if (debounceTimer) clearTimeout(debounceTimer);
-		debounceTimer = setTimeout(() => runSearch(q), 220);
+		debounceTimer = setTimeout(() => runSearch(q), 300);
 	}
 
 	function onInput() {
@@ -270,158 +301,183 @@
 <svelte:window onclick={onWindowClick} />
 
 <div class={['like-select', variant]} bind:this={rootEl}>
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div
-		class="field-shell"
-		class:disabled
-		onclick={focusInput}
-		onkeydown={(e) => {
-			if (e.key === 'Enter' || e.key === ' ') focusInput();
-		}}
-	>
-		{#each values as title, i (title + String(i))}
-			<span class="chip" transition:fade={{ duration: 100 }}>
-				<span class="chip-label">{title}</span>
-				<button
-					type="button"
-					class="chip-x"
-					onclick={(e) => {
-						e.stopPropagation();
-						removeAt(i);
+	{#if boardSoon}
+		<!-- placeholder state for board games until the token goes live -->
+		<div class="soon-banner" role="status">
+			<p class="soon-eyebrow">{BOARD_GAMES_SOON_COPY.eyebrow}</p>
+			<p class="soon-title">{BOARD_GAMES_SOON_COPY.title}</p>
+			<p class="soon-body">{BOARD_GAMES_SOON_COPY.body}</p>
+		</div>
+	{:else}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="field-shell"
+			class:disabled
+			onclick={focusInput}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' || e.key === ' ') focusInput();
+			}}
+		>
+			{#each values as title, i (title + String(i))}
+				<span class="chip" transition:fade={{ duration: 100 }}>
+					<span class="chip-label">{title}</span>
+					<button
+						type="button"
+						class="chip-x"
+						onclick={(e) => {
+							e.stopPropagation();
+							removeAt(i);
+						}}
+						{disabled}
+						aria-label="Remove {title}"
+					>
+						<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+							<path
+								d="M2 2l8 8M10 2L2 10"
+								stroke="currentColor"
+								stroke-width="1.6"
+								stroke-linecap="round"
+							/>
+						</svg>
+					</button>
+				</span>
+			{/each}
+
+			{#if !atMax}
+				<input
+					bind:this={inputEl}
+					{id}
+					class="search-input"
+					type="text"
+					role="combobox"
+					bind:value={query}
+					oninput={onInput}
+					onkeydown={onKeydown}
+					onfocus={() => {
+						if (query.trim()) {
+							open = true;
+							if (!results.length) scheduleSearch(query);
+						}
 					}}
+					placeholder={values.length
+						? 'Add another…'
+						: kind === 'music'
+							? 'Search a song or artist…'
+							: kind === 'games'
+								? 'Search a game…'
+								: kind === 'boardgames'
+									? 'Search a board game…'
+									: 'Search a title…'}
 					{disabled}
-					aria-label="Remove {title}"
-				>
-					<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-						<path
-							d="M2 2l8 8M10 2L2 10"
-							stroke="currentColor"
-							stroke-width="1.6"
-							stroke-linecap="round"
-						/>
-					</svg>
-				</button>
-			</span>
-		{/each}
-
-		{#if !atMax}
-			<input
-				bind:this={inputEl}
-				{id}
-				class="search-input"
-				type="text"
-				role="combobox"
-				bind:value={query}
-				oninput={onInput}
-				onkeydown={onKeydown}
-				onfocus={() => {
-					if (query.trim()) {
-						open = true;
-						if (!results.length) scheduleSearch(query);
-					}
-				}}
-				placeholder={values.length
-					? 'Add another…'
-					: kind === 'music'
-						? 'Search a song or artist…'
-						: kind === 'games'
-							? 'Search a game…'
-							: 'Search a title…'}
-				{disabled}
-				autocomplete="off"
-				autocapitalize="off"
-				spellcheck="false"
-				aria-autocomplete="list"
-				aria-expanded={open}
-				aria-controls={id ? `${id}-list` : undefined}
-				aria-haspopup="listbox"
-			/>
-		{:else}
-			<span class="max-hint">Max {max}</span>
-		{/if}
-	</div>
-
-	{#if open && !atMax && (loading || results.length || query.trim())}
-		<div class="panel" transition:fade={{ duration: 120 }} role="presentation">
-			{#if loading && !results.length}
-				<p class="panel-status">Searching…</p>
-			{:else if results.length}
-				<ul
-					class="list"
-					bind:this={listEl}
-					role="listbox"
-					id={id ? `${id}-list` : undefined}
-					aria-label="Matching titles"
-				>
-					{#each results as hit, i (hit.mediaType + hit.id)}
-						<li role="option" aria-selected={i === highlight} data-idx={i}>
-							<button
-								type="button"
-								class="row"
-								class:highlight={i === highlight}
-								onclick={() => selectHit(hit)}
-								onmouseenter={() => (highlight = i)}
-							>
-								{#if showPoster(hit)}
-									<img
-										class="poster"
-										src={hit.posterUrl}
-										alt=""
-										loading="lazy"
-										onerror={() => markPosterBroken(hit)}
-									/>
-								{:else}
-									<span
-										class="poster poster-fallback"
-										style={coverFallbackStyle(
-											hit.subtitle ? `${hit.subtitle} ${hit.title}` : hit.title
-										)}
-										aria-hidden="true"
-									>
-										<span class="poster-initials">
-											{mediaInitials(hit.title, hit.subtitle)}
-										</span>
-									</span>
-								{/if}
-								<span class="meta">
-									<span class="title">{hit.title}</span>
-									<span class="sub">
-										{#if hit.subtitle}
-											<span>{hit.subtitle}</span>
-											<span class="dot">·</span>
-										{/if}
-										<span class="kind">{hit.kindLabel}</span>
-										{#if hit.year}
-											<span class="dot">·</span>
-											<span>{hit.year}</span>
-										{/if}
-										{#if hit.rating != null && hit.rating > 0}
-											<span class="dot">·</span>
-											<span class="rating">★ {formatRating(hit.rating)}</span>
-										{/if}
-									</span>
-								</span>
-								<svg class="chev" viewBox="0 0 8 12" width="8" height="12" aria-hidden="true">
-									<path
-										d="M1 1l5 5-5 5"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="1.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									/>
-								</svg>
-							</button>
-						</li>
-					{/each}
-				</ul>
-				{#if total > results.length}
-					<p class="panel-foot">{total} matches — pick one above</p>
-				{/if}
+					autocomplete="off"
+					autocapitalize="off"
+					spellcheck="false"
+					aria-autocomplete="list"
+					aria-expanded={open}
+					aria-controls={id ? `${id}-list` : undefined}
+					aria-haspopup="listbox"
+				/>
 			{:else}
-				<p class="panel-status">No titles found</p>
+				<span class="max-hint">Max {max}</span>
 			{/if}
 		</div>
+
+		{#if open && !atMax && (loading || results.length || query.trim())}
+			<div class="panel" transition:fade={{ duration: 120 }} role="presentation">
+				{#if loading && !results.length}
+					<p class="panel-status">Searching…</p>
+				{:else if results.length}
+					<ul
+						class="list"
+						bind:this={listEl}
+						role="listbox"
+						id={id ? `${id}-list` : undefined}
+						aria-label="Matching titles"
+					>
+						{#each results as hit, i (hit.mediaType + hit.id)}
+							<li role="option" aria-selected={i === highlight} data-idx={i}>
+								<button
+									type="button"
+									class="row"
+									class:highlight={i === highlight}
+									onclick={() => selectHit(hit)}
+									onmouseenter={() => (highlight = i)}
+								>
+									{#if showPoster(hit)}
+										<span class="poster-slot">
+											{#if !loadedPosters.has(posterKey(hit))}
+												<span
+													class="poster poster-skel animate-pulse bg-zinc-200 dark:bg-zinc-800 border-2 border-black"
+													aria-hidden="true"
+												></span>
+											{/if}
+											<img
+												class="poster"
+												class:poster-in={loadedPosters.has(posterKey(hit))}
+												src={posterOf(hit)}
+												alt=""
+												loading="lazy"
+												referrerpolicy="no-referrer"
+												onload={() => loadedPosters.add(posterKey(hit))}
+												onerror={() => markPosterBroken(hit)}
+											/>
+										</span>
+									{:else}
+										<span
+											class="poster poster-fallback"
+											style={coverFallbackStyle(
+												hit.subtitle ? `${hit.subtitle} ${hit.title}` : hit.title
+											)}
+											aria-hidden="true"
+										>
+											<span class="poster-initials">
+												{mediaInitials(hit.title, hit.subtitle)}
+											</span>
+										</span>
+									{/if}
+									<span class="meta">
+										<span class="title">{hit.title}</span>
+										<span class="sub">
+											{#if hit.subtitle}
+												<span>{hit.subtitle}</span>
+												<span class="dot">·</span>
+											{/if}
+											<span class="kind">{hit.kindLabel}</span>
+											{#if hit.year}
+												<span class="dot">·</span>
+												<span>{hit.year}</span>
+											{/if}
+											{#if hit.rating != null && hit.rating > 0}
+												<span class="dot">·</span>
+												<span class="rating">★ {formatRating(hit.rating)}</span>
+											{/if}
+										</span>
+									</span>
+									<svg class="chev" viewBox="0 0 8 12" width="8" height="12" aria-hidden="true">
+										<path
+											d="M1 1l5 5-5 5"
+											fill="none"
+											stroke="currentColor"
+											stroke-width="1.5"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/>
+									</svg>
+								</button>
+							</li>
+						{/each}
+					</ul>
+					{#if total > results.length}
+						<p class="panel-foot">{total} matches — pick one above</p>
+					{/if}
+				{:else}
+					<!-- adding a clean zero-result fallback state so the UI never breaks when a query comes back empty -->
+					<div class="panel-miss">
+						<p class="panel-status">[ERROR]: No vibes match this exact query.</p>
+					</div>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -429,7 +485,41 @@
 	.like-select {
 		position: relative;
 		width: 100%;
+		height: auto;
+		overflow: visible;
 		font-family: 'IBM Plex Sans', system-ui, sans-serif;
+	}
+
+	.soon-banner {
+		padding: 0.85rem 0.95rem;
+		border: 1px solid #333;
+		border-radius: 0;
+		background: #0a0a0e;
+	}
+	.soon-eyebrow {
+		margin: 0 0 0.35rem;
+		font-size: 0.68rem;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: #ff4c00;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+	}
+	.soon-title {
+		margin: 0 0 0.35rem;
+		font-size: 1rem;
+		font-weight: 700;
+		color: #f3f4f6;
+		letter-spacing: -0.01em;
+	}
+	.soon-body {
+		margin: 0;
+		font-size: 0.82rem;
+		line-height: 1.45;
+		color: #9ca3af;
+	}
+	.like-select.desktop .soon-banner {
+		border-color: #2a2a32;
+		background: #14141a;
 	}
 
 	.field-shell {
@@ -574,6 +664,25 @@
 		background: #2a2a35;
 		flex-shrink: 0;
 	}
+	.poster-slot {
+		position: relative;
+		width: 36px;
+		height: 52px;
+		flex-shrink: 0;
+	}
+	.poster-slot .poster {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+	}
+	.poster-slot img.poster {
+		opacity: 0;
+		transition: opacity 0.25s ease;
+	}
+	.poster-slot img.poster-in {
+		opacity: 1;
+	}
 	.poster-fallback {
 		display: inline-flex;
 		align-items: center;
@@ -635,6 +744,15 @@
 		text-align: center;
 		font-size: 0.78rem;
 		color: rgba(243, 244, 246, 0.4);
+	}
+	.panel-miss {
+		border-left: 4px solid #ff4c00;
+	}
+	.panel-miss .panel-status {
+		text-align: left;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		font-weight: 600;
+		color: #f2f2f5;
 	}
 	.panel-foot {
 		border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -703,6 +821,9 @@
 	.like-select.desktop .panel-foot {
 		color: #666;
 		border-color: #eee;
+	}
+	.like-select.desktop .panel-miss .panel-status {
+		color: #111;
 	}
 	.like-select.desktop .poster {
 		border-radius: 0;

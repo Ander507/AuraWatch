@@ -1,19 +1,50 @@
 /** Local Aura List — watchlist / backlog in localStorage */
 
+import type { SavedWatchProvider } from '$lib/savedListCard';
+
 export type AuraListItem = {
 	id: string;
 	title: string;
 	cover: string;
 	year?: string;
 	mediaType?: string;
-	kind?: 'song' | 'media' | 'game';
+	kind?: 'song' | 'media' | 'game' | 'book' | 'boardgame' | 'vibe';
 	artist?: string;
 	pitch?: string;
+	providers?: SavedWatchProvider[];
+	listId?: string;
+	listSlug?: string;
+	listTitle?: string;
 	savedAt: number;
 };
 
 const KEY = 'aurawatch_list_v1';
 const MAX = 80;
+
+function parseProviders(raw: unknown): SavedWatchProvider[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const out: SavedWatchProvider[] = [];
+	for (const row of raw.slice(0, 24)) {
+		if (!row || typeof row !== 'object') continue;
+		const r = row as Record<string, unknown>;
+		const name = String(r.name || '').trim();
+		if (!name) continue;
+		out.push({
+			name,
+			logo: r.logo != null ? String(r.logo) : null,
+			url: r.url != null ? String(r.url) : null,
+			type:
+				r.type === 'flatrate' ||
+				r.type === 'rent' ||
+				r.type === 'buy' ||
+				r.type === 'ads' ||
+				r.type === 'free'
+					? r.type
+					: undefined
+		});
+	}
+	return out.length ? out : undefined;
+}
 
 function safeParse(raw: string | null): AuraListItem[] {
 	if (!raw) return [];
@@ -28,9 +59,17 @@ function safeParse(raw: string | null): AuraListItem[] {
 				cover: String(x.cover || ''),
 				year: x.year ? String(x.year) : undefined,
 				mediaType: x.mediaType ? String(x.mediaType) : undefined,
-				kind: x.kind === 'song' || x.kind === 'game' ? x.kind : 'media',
+				kind:
+					x.kind === 'song' ||
+					x.kind === 'game' ||
+					x.kind === 'book' ||
+					x.kind === 'boardgame' ||
+					x.kind === 'vibe'
+						? x.kind
+						: 'media',
 				artist: x.artist ? String(x.artist) : undefined,
 				pitch: x.pitch ? String(x.pitch) : undefined,
+				providers: parseProviders(x.providers),
 				savedAt: typeof x.savedAt === 'number' ? x.savedAt : Date.now()
 			}));
 	} catch {
@@ -85,6 +124,7 @@ export function toggleAuraListItem(
 		kind: item.kind || 'media',
 		artist: item.artist,
 		pitch: item.pitch,
+		providers: item.providers,
 		savedAt: Date.now()
 	};
 	return [next, ...list].slice(0, MAX);

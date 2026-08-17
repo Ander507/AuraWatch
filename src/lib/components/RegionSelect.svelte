@@ -174,6 +174,8 @@
 		--window: #ffffff;
 		position: relative;
 		width: 100%;
+		height: auto;
+		overflow: visible;
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
 	}
 

@@ -1,6 +1,5 @@
 <script lang="ts">
 	import './layout.css';
-	import favicon from '$lib/assets/favicon.svg';
 	import { dev } from '$app/environment';
 	import { injectAnalytics } from '@vercel/analytics/sveltekit';
 	import { SITE, seoJsonLd } from '$lib/seo';
@@ -24,7 +23,6 @@
 		content="xsUD-hMJpuROysPiXFy9UytXpXlyX66gkDON_xda4AE"
 	/>
 	<link rel="canonical" href={SITE.url} />
-	<link rel="icon" href={favicon} />
 
 	<meta property="og:type" content="website" />
 	<meta property="og:site_name" content={SITE.name} />
@@ -43,4 +41,16 @@
 	{@html `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`}
 </svelte:head>
 
-{@render children()}
+<!-- making sure the outermost shell can't stretch past the phone and leave that black void -->
+<div class="w-full max-w-full overflow-x-hidden">
+	{@render children()}
+	<!-- dropping the legally required amazon disclaimer in the footer so our affiliate account doesn't get nuked -->
+	<!-- keeping the text small and muted so it doesn't ruin the brutalist aesthetic -->
+	<footer
+		class="w-full text-xs text-gray-500 dark:text-zinc-500 text-center p-4 max-lg:pb-24"
+	>
+		<!-- making sure it sits above the mobile bottom nav so it's actually visible -->
+		AuraWatch is a free service. 'Buy on Amazon' links are affiliate links. As an Amazon Associate,
+		we earn from qualifying purchases.
+	</footer>
+</div>

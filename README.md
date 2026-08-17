@@ -4,7 +4,7 @@ A vibe finder for movies, TV, anime, songs, and games — tell it what you’re 
 
 ![AuraWatch desktop UI](docs/desktop.png)
 
-**[Try the live demo →](https://aura-watching.vercel.app/)**
+**[Try the live demo →](https://aurawatch.org/)**
 
 <p align="center">
   <img src="docs/minimal.png" alt="Minimal theme" width="48%" />
@@ -45,7 +45,7 @@ Then open [http://localhost:5173](http://localhost:5173).
 
 ### Environment
 
-Copy `.env.example` → `.env` and fill what you have:
+Copy `.env.example` → `.env` and fill what you have. **Never commit `.env`** — this repo is public.
 
 | Variable | What it’s for |
 |---|---|
@@ -54,8 +54,11 @@ Copy `.env.example` → `.env` and fill what you have:
 | `TMDB_WATCH_REGION` | Fallback region only — users pick their own in the UI. |
 | `IGDB_CLIENT_ID` | Twitch / IGDB client ID — Games covers, platforms, store links. |
 | `IGDB_CLIENT_SECRET` | Twitch / IGDB client secret. |
+| `TURSO_DB_URL` / `TURSO_DB_AUTH_TOKEN` | Cloud vibe lists (libSQL). |
+| `AUTH_SECRET` | Required for Auth.js sessions (`openssl rand -hex 32`). |
+| `AUTH_DISCORD_ID` / `AUTH_DISCORD_SECRET` | Discord OAuth. |
 
-No keys? It still runs off a small local catalog. Recommendations get sharper once Gemini + TMDB are set. Song mode needs Gemini. Games mode needs IGDB.
+Put the same keys in Vercel (or your host) env settings for production. No keys? It still runs off a small local catalog.
 
 ```bash
 npm run build    # production build

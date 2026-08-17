@@ -1,13 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getWorkingGeminiKey, howManyKeysWeGot, discoverModelViaList, grabKeysFromEnv } from '$lib/server/geminiRotator';
+import {
+	getWorkingGeminiKey,
+	howManyKeysWeGot,
+	discoverModelViaList,
+	grabKeysFromEnv
+} from '$lib/server/geminiRotator';
 import { howManyIgdbCreds, getIgdbAuth } from '$lib/server/igdbAuth';
 import { env } from '$env/dynamic/private';
+import { isTursoConfigured } from '$lib/server/db';
 
 /**
  * Lightweight warm-up for Vercel cold starts.
- * Runs listModels once so the first /api/recommend hits a warm model cache.
- * Also refreshes IGDB Twitch token when configured.
+ * Keep this boring on purpose — don't leak key counts / raw errors publicly.
  */
 export const GET: RequestHandler = async () => {
 	const started = Date.now();
@@ -15,30 +20,30 @@ export const GET: RequestHandler = async () => {
 	const hasTmdb = Boolean(env.TMDB_API_KEY || env.TMDB_READ_ACCESS_TOKEN);
 	const hasIgdb = howManyIgdbCreds() > 0;
 
-	let gemini: { ok: boolean; model?: string; err?: string } = { ok: false };
-	let igdb: { ok: boolean; err?: string } = { ok: false };
+	let geminiOk = false;
+	let igdbOk = false;
 
 	if (keys > 0) {
 		try {
 			const first = grabKeysFromEnv()[0];
 			const listed = first ? await discoverModelViaList(first) : null;
 			if (listed) {
-				gemini = { ok: true, model: listed };
+				geminiOk = true;
 			} else {
-				const { model } = await getWorkingGeminiKey();
-				gemini = { ok: true, model };
+				await getWorkingGeminiKey();
+				geminiOk = true;
 			}
-		} catch (e: any) {
-			gemini = { ok: false, err: e?.message || 'gemini warm failed' };
+		} catch {
+			geminiOk = false;
 		}
 	}
 
 	if (hasIgdb) {
 		try {
 			await getIgdbAuth();
-			igdb = { ok: true };
-		} catch (e: any) {
-			igdb = { ok: false, err: e?.message || 'igdb warm failed' };
+			igdbOk = true;
+		} catch {
+			igdbOk = false;
 		}
 	}
 
@@ -46,9 +51,13 @@ export const GET: RequestHandler = async () => {
 		ok: true,
 		warm: true,
 		ms: Date.now() - started,
-		keys,
-		tmdb: hasTmdb,
-		igdb,
-		gemini
+		// booleans only — no key counts, model names, or error strings
+		services: {
+			gemini: geminiOk,
+			tmdb: hasTmdb,
+			igdb: igdbOk,
+			turso: isTursoConfigured(),
+			auth: Boolean((env.AUTH_SECRET || '').trim())
+		}
 	});
 };

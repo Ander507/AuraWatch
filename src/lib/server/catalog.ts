@@ -1,10 +1,24 @@
 // grounded catalog — REAL tags only. UI genres never overwrite these.
 
-export type MediaFormat = 'movie' | 'series' | 'anime' | 'songs' | 'games';
+export type MediaFormat =
+	| 'movie'
+	| 'series'
+	| 'anime'
+	| 'songs'
+	| 'games'
+	| 'books'
+	| 'boardgames'
+	| 'fullvibe';
 export type SelectedType = 'all' | MediaFormat;
-/** Empty array = all media formats (movie / series / anime). Songs/games never live in the catalog. */
+/** Empty array = all media formats (movie / series / anime). Exclusive lanes never live in the catalog. */
 export type SelectedTypes = MediaFormat[];
 export type CatalogKind = 'anime_series' | 'anime_movie' | 'movie' | 'series';
+
+const EXCLUSIVE: MediaFormat[] = ['songs', 'games', 'books', 'boardgames', 'fullvibe'];
+
+export function isExclusiveFormat(t: MediaFormat | string): boolean {
+	return EXCLUSIVE.includes(t as MediaFormat);
+}
 
 export type CatalogTitle = {
 	title: string;
@@ -24,11 +38,11 @@ export type CatalogTitle = {
 	kind: CatalogKind;
 };
 
-/** Media formats for catalog / TMDB (drops songs + games). Empty = all media. */
+/** Media formats for catalog / TMDB (drops exclusive lanes). Empty = all media. */
 export function catalogFormats(types: SelectedTypes | SelectedType | undefined): MediaFormat[] {
 	if (types == null || types === 'all') return [];
 	if (typeof types === 'string') {
-		return types === 'songs' || types === 'games' ? [] : [types];
+		return isExclusiveFormat(types) ? [] : [types];
 	}
 	return types.filter(
 		(t): t is MediaFormat => t === 'movie' || t === 'series' || t === 'anime'
@@ -36,7 +50,7 @@ export function catalogFormats(types: SelectedTypes | SelectedType | undefined):
 }
 
 function matchesCatalogFormat(show: CatalogTitle, allow: MediaFormat[]): boolean {
-	if (!allow.length) return show.format !== 'songs' && show.format !== 'games';
+	if (!allow.length) return !isExclusiveFormat(show.format);
 	return allow.includes(show.format);
 }
 
