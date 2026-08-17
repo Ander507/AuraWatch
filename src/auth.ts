@@ -10,7 +10,7 @@ import { getDb, isTursoConfigured } from '$lib/server/db';
 import { users, accounts, sessions } from '$lib/server/schema';
 import { verifyPassword } from '$lib/server/password';
 import { usernameToAuthEmail } from '$lib/usernameAuth';
-import { discordRedirectUri } from '$lib/discordAuth';
+import { discordRedirectUri, authCookieDomain, canonicalAuthOrigin } from '$lib/discordAuth';
 
 export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAuthConfig> {
 	const providers = [];
@@ -73,14 +73,44 @@ export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAut
 	);
 
 	const tursoReady = isTursoConfigured();
+	const cookieDomain = authCookieDomain(event.url.origin);
+	const secure = event.url.protocol === 'https:';
+	const cookiePrefix = secure ? '__Secure-' : '';
+	const cookieOpts = {
+		httpOnly: true,
+		sameSite: 'lax' as const,
+		path: '/',
+		secure,
+		...(cookieDomain ? { domain: cookieDomain } : {})
+	};
 
 	return {
 		providers,
 		secret: secret || undefined,
 		trustHost: true,
 		basePath: '/auth',
+		useSecureCookies: secure,
 		pages: {
-			signIn: '/signin'
+			signIn: '/signin',
+			error: '/signin'
+		},
+		cookies: {
+			sessionToken: { name: `${cookiePrefix}authjs.session-token`, options: cookieOpts },
+			callbackUrl: { name: `${cookiePrefix}authjs.callback-url`, options: cookieOpts },
+			csrfToken: { name: `${cookiePrefix}authjs.csrf-token`, options: cookieOpts },
+			pkceCodeVerifier: {
+				name: `${cookiePrefix}authjs.pkce.code_verifier`,
+				options: { ...cookieOpts, maxAge: 60 * 15 }
+			},
+			state: {
+				name: `${cookiePrefix}authjs.state`,
+				options: { ...cookieOpts, maxAge: 60 * 15 }
+			},
+			nonce: { name: `${cookiePrefix}authjs.nonce`, options: cookieOpts },
+			webauthnChallenge: {
+				name: `${cookiePrefix}authjs.challenge`,
+				options: { ...cookieOpts, maxAge: 60 * 15 }
+			}
 		},
 		...(tursoReady
 			? {
@@ -106,13 +136,14 @@ export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAut
 				return session;
 			},
 			async redirect({ url, baseUrl }) {
-				if (url.startsWith('/')) return `${baseUrl}${url}`;
+				const home = canonicalAuthOrigin(baseUrl);
+				if (url.startsWith('/')) return `${home}${url}`;
 				try {
-					if (new URL(url).origin === baseUrl) return url;
+					if (canonicalAuthOrigin(url) === home) return url;
 				} catch {
-					return baseUrl;
+					return `${home}/`;
 				}
-				return baseUrl;
+				return `${home}/`;
 			}
 		}
 	};

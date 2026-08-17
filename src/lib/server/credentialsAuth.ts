@@ -137,7 +137,7 @@ export async function handleCredentialsRegister(event: RequestEvent) {
 			return fail(400, { error: 'That username looks off', email: '', mode: 'register' as const });
 		}
 		if (e?.message === 'bad_password') {
-			return fail(400, { error: pw.error, email, mode: 'register' as const });
+			return fail(400, { error: 'Password looks off', email, mode: 'register' as const });
 		}
 		console.error('register boom', e);
 		return fail(500, {

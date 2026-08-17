@@ -12,9 +12,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		error:
 			err === 'CredentialsSignin'
 				? 'Wrong username or password'
-				: err
-					? 'Sign-in failed — try again'
-					: null
+				: err === 'Configuration'
+					? 'Sign-in isn’t configured on the server yet — try again in a minute'
+					: err
+						? 'Sign-in failed — try again'
+						: null
 	};
 };
 

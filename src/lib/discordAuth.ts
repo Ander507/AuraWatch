@@ -15,3 +15,16 @@ export function canonicalAuthOrigin(origin: string) {
 export function discordRedirectUri(origin: string) {
 	return `${canonicalAuthOrigin(origin)}${DISCORD_CALLBACK_PATH}`;
 }
+
+export function authCookieDomain(origin: string): string | undefined {
+	try {
+		const host = new URL(origin.includes('://') ? origin : `https://${origin}`).hostname.replace(
+			/^www\./i,
+			''
+		);
+		if (host === 'aurawatch.org') return '.aurawatch.org';
+	} catch {
+		/* localhost and preview hosts keep host-only cookies */
+	}
+	return undefined;
+}
