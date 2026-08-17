@@ -1,14 +1,22 @@
 <script lang="ts">
 	import './layout.css';
+	import { onMount } from 'svelte';
 	import { dev } from '$app/environment';
 	import { injectAnalytics } from '@vercel/analytics/sveltekit';
+	import { page } from '$app/state';
 	import { SITE, seoJsonLd } from '$lib/seo';
+	import { hydrateUiTheme } from '$lib/uiTheme.svelte';
 
 	injectAnalytics({ mode: dev ? 'development' : 'production' });
 
 	let { children } = $props();
 
 	const jsonLd = seoJsonLd();
+	let isAuthPage = $derived(page.url.pathname.startsWith('/signin'));
+
+	onMount(() => {
+		hydrateUiTheme();
+	});
 </script>
 
 <svelte:head>
@@ -42,12 +50,17 @@
 </svelte:head>
 
 <!-- making sure the outermost shell can't stretch past the phone and leave that black void -->
-<div class="w-full max-w-full overflow-x-hidden">
-	{@render children()}
+<div class="flex min-h-dvh w-full max-w-full flex-col overflow-x-hidden">
+	<div class="flex min-h-0 flex-1 flex-col">
+		{@render children()}
+	</div>
 	<!-- dropping the legally required amazon disclaimer in the footer so our affiliate account doesn't get nuked -->
 	<!-- keeping the text small and muted so it doesn't ruin the brutalist aesthetic -->
 	<footer
-		class="w-full text-xs text-gray-500 dark:text-zinc-500 text-center p-4 max-lg:pb-24"
+		class={[
+			'w-full p-4 text-center text-xs text-gray-500 dark:text-zinc-500',
+			!isAuthPage && 'max-lg:pb-24'
+		]}
 	>
 		<!-- making sure it sits above the mobile bottom nav so it's actually visible -->
 		AuraWatch is a free service. 'Buy on Amazon' links are affiliate links. As an Amazon Associate,

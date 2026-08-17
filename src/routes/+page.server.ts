@@ -9,6 +9,7 @@ import {
 	removeSavedItemByTitle,
 	savedItemProviders
 } from '$lib/server/lists';
+import { handleCredentialsLogin, handleCredentialsRegister } from '$lib/server/credentialsAuth';
 import type { SavedItem } from '$lib/server/schema';
 
 function mapItem(i: SavedItem) {
@@ -54,6 +55,8 @@ type CloudPlaylist = {
 };
 
 export const actions: Actions = {
+	login: handleCredentialsLogin,
+	register: handleCredentialsRegister,
 	// wrapping this in auth so randoms can't edit other people's vibe lists
 	saveItem: async ({ request, locals }) => {
 		const session = await locals.auth();

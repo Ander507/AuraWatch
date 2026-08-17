@@ -6,7 +6,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
-	import { signIn, signOut } from '@auth/sveltekit/client';
+	import { signOut } from '@auth/sveltekit/client';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
@@ -25,6 +25,9 @@
 	import { rollSurpriseMe } from '$lib/surpriseMe';
 	import { SITE } from '$lib/seo';
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+	import { signInWithDiscord } from '$lib/discordSignIn';
+	import { registerWithEmail, signInWithEmail } from '$lib/emailAuth';
+	import { usernameToAuthEmail } from '$lib/usernameAuth';
 	import {
 		loadAuraList,
 		saveAuraList,
@@ -290,12 +293,67 @@
 	// which pick the sticky save fab is aimed at (defaults to first result)
 	let fabSaveIndex = $state(0);
 	let showLoginPrompt = $state(false);
+	// toggling a local state variable so the auth modal switches between sign in and register inline without navigating away
+	let isRegistering = $state(false);
+	let authError = $state('');
+	let authBusy = $state(false);
 	let saveBusy = $state(false);
 	// dropdown for picking which playlist to drop the saved item into
 	let savePickerItem = $state<Rec | null>(null);
 	let newPlaylistTitle = $state('');
 	let playlistBusy = $state(false);
 	let savingListId = $state<string | null>(null);
+
+	function openLoginPrompt() {
+		isRegistering = false;
+		authError = '';
+		showLoginPrompt = true;
+	}
+
+	function closeLoginPrompt() {
+		showLoginPrompt = false;
+		isRegistering = false;
+		authError = '';
+		authBusy = false;
+	}
+
+	function portalToBody(node: HTMLElement) {
+		document.body.appendChild(node);
+		return () => {
+			node.remove();
+		};
+	}
+
+	async function submitEmailAuth(e: SubmitEvent) {
+		e.preventDefault();
+		const formEl = e.currentTarget as HTMLFormElement;
+		const fd = new FormData(formEl);
+		const username = String(fd.get('username') || '');
+		const email = usernameToAuthEmail(username);
+		const password = String(fd.get('password') || '');
+		const name = String(fd.get('name') || '');
+		authBusy = true;
+		authError = '';
+		try {
+			if (!email || !password) {
+				authError = 'Username and password required';
+				return;
+			}
+			const result = isRegistering
+				? await registerWithEmail({ email, password, name })
+				: await signInWithEmail(email, password);
+			if (!result.ok) {
+				authError = result.error;
+				return;
+			}
+			closeLoginPrompt();
+			await invalidateAll();
+		} catch {
+			authError = 'Couldn’t do that — try again';
+		} finally {
+			authBusy = false;
+		}
+	}
 
 	type CloudPlaylistClient = {
 		id: string;
@@ -856,7 +914,7 @@
 
 	async function copyLetterboxdList() {
 		if (!session?.user) {
-			showLoginPrompt = true;
+			openLoginPrompt();
 			return;
 		}
 		const picks = viewMode === 'list' ? letterboxdPicksFromAuraList() : letterboxdPicksFromResults();
@@ -1338,7 +1396,7 @@
 	async function toggleSave(item: Rec) {
 		// guest? bounce them to login instead of stuffing localStorage forever
 		if (!session?.user) {
-			showLoginPrompt = true;
+			openLoginPrompt();
 			return;
 		}
 		if (saveBusy) return;
@@ -2526,7 +2584,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOut({ callbackUrl: '/' })}>Sign out</button>
 		{:else}
-			<button type="button" class="auth-btn" onclick={() => (showLoginPrompt = true)}>Sign in</button>
+			<button type="button" class="auth-btn" onclick={() => openLoginPrompt()}>Sign in</button>
 		{/if}
 	</div>
 {/snippet}
@@ -2751,20 +2809,21 @@
 {/if}
 
 {#if showLoginPrompt}
-	<!-- turning modals into slide-up bottom sheets so it feels like a real app -->
+	<!-- centering the auth modal dead-center on the screen using flex items-center justify-center -->
 	<div
-		class="login-prompt-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4 max-lg:items-end max-lg:p-0"
+		{@attach portalToBody}
+		class="auth-modal-backdrop login-prompt-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
 		class:minimal-backdrop={uiTheme === 'minimal'}
 		role="presentation"
-		onclick={() => (showLoginPrompt = false)}
+		onclick={() => closeLoginPrompt()}
 		onkeydown={(e) => {
 			// esc closes the login sheet
-			if (e.key === 'Escape') showLoginPrompt = false;
+			if (e.key === 'Escape') closeLoginPrompt();
 		}}
 		transition:fade={{ duration: 160 }}
 	>
 		<div
-			class="term-modal mt-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto transition-transform max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-w-none max-lg:rounded-t-3xl"
+			class="term-modal mx-auto my-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"
 			class:modal-desktop={uiTheme === 'desktop'}
 			class:modal-minimal={uiTheme === 'minimal'}
 			role="dialog"
@@ -2774,10 +2833,9 @@
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={(e) => {
 				e.stopPropagation();
-				if (e.key === 'Escape') showLoginPrompt = false;
+				if (e.key === 'Escape') closeLoginPrompt();
 			}}
 		>
-			<div class="sheet-handle lg:hidden" aria-hidden="true"></div>
 			{#if uiTheme === 'desktop'}
 				<!-- hiding the fake mac window buttons when we aren't in desktop mode -->
 				<div class="term-titlebar">
@@ -2786,55 +2844,71 @@
 							type="button"
 							class="dot red"
 							aria-label="Close"
-							onclick={() => (showLoginPrompt = false)}
+							onclick={() => closeLoginPrompt()}
 						></button>
 						<span class="dot yellow"></span>
 						<span class="dot green"></span>
 					</div>
-					<span class="titlebar-text">~/AuraWatch — Sign in</span>
+					<span class="titlebar-text">~/AuraWatch — {isRegistering ? 'Register' : 'Sign in'}</span>
 					<span class="titlebar-tag">AUTH</span>
 				</div>
 			{/if}
 			<div class="term-modal-body">
-				<h2 id="login-prompt-title">Sign in to save</h2>
+				<h2 id="login-prompt-title">{isRegistering ? 'Create account' : 'Sign in to save'}</h2>
 				<p>Cloud sync needs a login so you can share your vibe list.</p>
 				<div class="login-prompt-actions">
 					<button
 						type="button"
 						class="term-btn primary discord"
-						onclick={() => signIn('discord', { callbackUrl: '/' })}
+						onclick={() => void signInWithDiscord()}
 					>
 						Login with Discord
 					</button>
-					<form
-						method="POST"
-						action={`${resolve('/signin')}?/login`}
-						class="login-cred-form"
-						use:enhance={() => {
-							return async ({ result, update }) => {
-								if (result.type === 'redirect') {
-									showLoginPrompt = false;
-									await invalidateAll();
-									return;
-								}
-								await update({ reset: false });
-							};
-						}}
-					>
-						<input type="email" name="email" required placeholder="Email" autocomplete="email" />
+					<!-- hooking up the email and password submit handlers to the auth client so regular sign-in actually works -->
+					<form class="login-cred-form" onsubmit={submitEmailAuth}>
+						{#if isRegistering}
+							<!-- dynamically rendering the name field and changing button text when creating an account -->
+							<input
+								type="text"
+								name="name"
+								autocomplete="name"
+								placeholder="What should we call you"
+							/>
+						{/if}
+						<input
+							type="text"
+							name="username"
+							required
+							placeholder="Enter your username"
+							autocomplete="username"
+							spellcheck="false"
+						/>
 						<input
 							type="password"
 							name="password"
 							required
 							placeholder="Password"
-							autocomplete="current-password"
+							autocomplete={isRegistering ? 'new-password' : 'current-password'}
+							minlength={isRegistering ? 8 : undefined}
 						/>
-						<button type="submit" class="term-btn primary">Sign in</button>
+						{#if authError}
+							<p class="auth-modal-err" role="alert">{authError}</p>
+						{/if}
+						<button type="submit" class="term-btn primary" disabled={authBusy}>
+							{authBusy ? 'Working…' : isRegistering ? 'CREATE ACCOUNT' : 'SIGN IN'}
+						</button>
 					</form>
-					<a class="auth-link" href={resolve('/signin')}>Need an account? Register →</a>
-					<button type="button" class="term-btn" onclick={() => (showLoginPrompt = false)}
-						>Not now</button
+					<button
+						type="button"
+						class="auth-link"
+						onclick={() => {
+							isRegistering = !isRegistering;
+							authError = '';
+						}}
 					>
+						{isRegistering ? 'Already registered? Sign in <-' : 'Need an account? Register ->'}
+					</button>
+					<button type="button" class="term-btn" onclick={() => closeLoginPrompt()}>Not now</button>
 				</div>
 			</div>
 		</div>
@@ -2842,9 +2916,10 @@
 {/if}
 
 {#if savePickerItem}
-	<!-- turning modals into slide-up bottom sheets so it feels like a real app -->
+	<!-- centering the save to playlist modal dead-center on the screen so it matches the sign-in modal -->
 	<div
-		class="login-prompt-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4 max-lg:items-end max-lg:p-0"
+		{@attach portalToBody}
+		class="auth-modal-backdrop login-prompt-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
 		class:minimal-backdrop={uiTheme === 'minimal'}
 		role="presentation"
 		onclick={() => {
@@ -2856,7 +2931,7 @@
 		transition:fade={{ duration: 160 }}
 	>
 		<div
-			class="term-modal playlist-picker mt-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto transition-transform max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-w-none max-lg:rounded-t-3xl"
+			class="term-modal playlist-picker mx-auto my-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"
 			class:modal-desktop={uiTheme === 'desktop'}
 			class:modal-minimal={uiTheme === 'minimal'}
 			role="dialog"
@@ -2869,7 +2944,6 @@
 				if (e.key === 'Escape' && !saveBusy) savePickerItem = null;
 			}}
 		>
-			<div class="sheet-handle lg:hidden" aria-hidden="true"></div>
 			{#if uiTheme === 'desktop'}
 				<div class="term-titlebar">
 					<div class="traffic" aria-hidden="true">
@@ -6287,6 +6361,11 @@
 		background: rgba(26, 26, 26, 0.55);
 		align-items: center;
 		justify-content: center;
+		inset: 0;
+		width: 100%;
+		min-height: 100dvh;
+		height: 100dvh;
+		overscroll-behavior: none;
 	}
 	.login-prompt-backdrop.minimal-backdrop {
 		background: rgba(8, 8, 12, 0.72);
@@ -6310,12 +6389,12 @@
 	}
 
 	@media (max-width: 1023px) {
-		.login-prompt-backdrop {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) {
 			align-items: flex-end;
 			justify-content: stretch;
 			padding: 0;
 		}
-		.term-modal {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-modal {
 			max-width: none;
 			width: 100%;
 			align-self: stretch;
@@ -6324,13 +6403,37 @@
 			border-bottom-right-radius: 0;
 			max-height: min(88vh, 100%);
 		}
-		.term-modal.modal-desktop,
-		.term-modal.modal-minimal {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-modal.modal-desktop,
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-modal.modal-minimal {
 			border-radius: 1.5rem 1.5rem 0 0;
 		}
-		.term-titlebar {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-titlebar {
 			display: none;
 		}
+	}
+	.auth-modal-backdrop {
+		position: fixed !important;
+		inset: 0 !important;
+		display: flex !important;
+		align-items: center !important;
+		justify-content: center !important;
+		width: 100vw;
+		height: 100dvh;
+		margin: 0;
+		padding: 1rem;
+		z-index: 200;
+	}
+	.auth-modal-backdrop .term-modal {
+		margin: auto !important;
+		align-self: center !important;
+		position: relative !important;
+		inset: auto !important;
+		top: auto !important;
+		left: auto !important;
+		right: auto !important;
+		bottom: auto !important;
+		width: min(28rem, calc(100vw - 2rem));
+		max-width: 28rem;
 	}
 	/* swapping to rounded corners and sans-serif if the user is on the modern theme */
 	.term-modal.modal-desktop {
@@ -6363,11 +6466,11 @@
 	}
 
 	@media (max-width: 1023px) {
-		.term-modal.modal-desktop,
-		.term-modal.modal-minimal {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-modal.modal-desktop,
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-modal.modal-minimal {
 			border-radius: 1.5rem 1.5rem 0 0;
 		}
-		.term-titlebar {
+		.login-prompt-backdrop:not(.auth-modal-backdrop) .term-titlebar {
 			display: none;
 		}
 	}
@@ -6591,6 +6694,10 @@
 		text-align: center;
 		padding: 0.25rem 0;
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		background: none;
+		border: 0;
+		cursor: pointer;
+		width: 100%;
 	}
 	.term-modal.modal-desktop .auth-link:hover {
 		color: #ff4c00;
@@ -6602,9 +6709,22 @@
 		text-align: center;
 		padding: 0.25rem 0;
 		font-family: inherit;
+		background: none;
+		border: 0;
+		cursor: pointer;
+		width: 100%;
 	}
 	.term-modal.modal-minimal .auth-link:hover {
 		color: #8b7cf7;
+	}
+	.auth-modal-err {
+		margin: 0;
+		padding: 0.45rem 0.5rem;
+		border: 1px solid #7f1d1d;
+		background: #1a0a0a;
+		color: #fca5a5;
+		font-size: 0.75rem;
+		line-height: 1.35;
 	}
 
 	.playlist-create {
