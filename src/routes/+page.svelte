@@ -6,7 +6,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
-	import { signOut } from '@auth/sveltekit/client';
+	import { signOutEverywhere } from '$lib/discordSignIn';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
@@ -2582,7 +2582,7 @@
 				<img class="auth-avatar" src={session.user.image} alt="" width="28" height="28" />
 			{/if}
 			<span class="auth-name">{session.user.name || 'You'}</span>
-			<button type="button" class="auth-btn" onclick={() => signOut({ callbackUrl: '/' })}>Sign out</button>
+			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
 			<button type="button" class="auth-btn" onclick={() => openLoginPrompt()}>Sign in</button>
 		{/if}

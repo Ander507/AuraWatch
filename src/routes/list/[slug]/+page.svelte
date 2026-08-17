@@ -4,7 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { preloadCode, preloadData, goto } from '$app/navigation';
-	import { signOut } from '@auth/sveltekit/client';
+	import { signOutEverywhere } from '$lib/discordSignIn';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import RecommendForm from '$lib/components/RecommendForm.svelte';
 	import { SITE } from '$lib/seo';
@@ -148,9 +148,7 @@
 				<img class="auth-avatar" src={session.user.image} alt="" width="28" height="28" />
 			{/if}
 			<span class="auth-name">{session.user.name || 'You'}</span>
-			<button type="button" class="auth-btn" onclick={() => signOut({ callbackUrl: '/' })}
-				>Sign out</button
-			>
+			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
 			<a class="auth-btn" href={resolve('/signin')}>Sign in</a>
 		{/if}

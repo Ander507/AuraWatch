@@ -1,6 +1,5 @@
 import { SvelteKitAuth } from '@auth/sveltekit';
 import type { SvelteKitAuthConfig } from '@auth/sveltekit';
-import Discord from '@auth/sveltekit/providers/discord';
 import Credentials from '@auth/sveltekit/providers/credentials';
 import { DrizzleAdapter } from '@auth/drizzle-adapter';
 import { eq } from 'drizzle-orm';
@@ -10,7 +9,7 @@ import { getDb, isTursoConfigured } from '$lib/server/db';
 import { users, accounts, sessions } from '$lib/server/schema';
 import { verifyPassword } from '$lib/server/password';
 import { usernameToAuthEmail } from '$lib/usernameAuth';
-import { discordRedirectUri, authCookieDomain, canonicalAuthOrigin } from '$lib/discordAuth';
+import { authCookieDomain, canonicalAuthOrigin } from '$lib/discordAuth';
 
 export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAuthConfig> {
 	const providers = [];
@@ -18,24 +17,6 @@ export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAut
 	const secret = (env.AUTH_SECRET || '').trim();
 	if (!secret && env.NODE_ENV === 'production') {
 		console.error('AUTH_SECRET is missing — set it before shipping or sessions are toast');
-	}
-
-	const dcId = env.AUTH_DISCORD_ID || env.DISCORD_CLIENT_ID;
-	const dcSecret = env.AUTH_DISCORD_SECRET || env.DISCORD_CLIENT_SECRET;
-	if (dcId && dcSecret) {
-		const redirectUri = discordRedirectUri(event.url.origin);
-		providers.push(
-			Discord({
-				clientId: dcId,
-				clientSecret: dcSecret,
-				authorization: {
-					params: {
-						scope: 'identify email',
-						redirect_uri: redirectUri
-					}
-				}
-			})
-		);
 	}
 
 	providers.push(
