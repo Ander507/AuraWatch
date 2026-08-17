@@ -1,4 +1,5 @@
 import { SvelteKitAuth } from '@auth/sveltekit';
+import type { SvelteKitAuthConfig } from '@auth/sveltekit';
 import Discord from '@auth/sveltekit/providers/discord';
 import Credentials from '@auth/sveltekit/providers/credentials';
 import { DrizzleAdapter } from '@auth/drizzle-adapter';
@@ -11,8 +12,7 @@ import { verifyPassword } from '$lib/server/password';
 import { usernameToAuthEmail } from '$lib/usernameAuth';
 import { discordRedirectUri } from '$lib/discordAuth';
 
-// discord + email/password only — credentials need jwt even with the drizzle adapter
-export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEvent) => {
+export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAuthConfig> {
 	const providers = [];
 
 	const secret = (env.AUTH_SECRET || '').trim();
@@ -23,7 +23,6 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 	const dcId = env.AUTH_DISCORD_ID || env.DISCORD_CLIENT_ID;
 	const dcSecret = env.AUTH_DISCORD_SECRET || env.DISCORD_CLIENT_SECRET;
 	if (dcId && dcSecret) {
-		// aligning the sveltekit auth callback route so it matches the discord developer portal redirect uri exactly
 		const redirectUri = discordRedirectUri(event.url.origin);
 		providers.push(
 			Discord({
@@ -31,6 +30,7 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 				clientSecret: dcSecret,
 				authorization: {
 					params: {
+						scope: 'identify email',
 						redirect_uri: redirectUri
 					}
 				}
@@ -47,7 +47,9 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 				password: { label: 'Password', type: 'password' }
 			},
 			async authorize(creds) {
-				const email = usernameToAuthEmail(creds?.email) || usernameToAuthEmail(creds?.username);
+				const email =
+					usernameToAuthEmail(creds?.email) ||
+					usernameToAuthEmail((creds as { username?: unknown } | undefined)?.username);
 				const password = String(creds?.password || '');
 				if (!email || !password) return null;
 				if (!isTursoConfigured()) return null;
@@ -57,7 +59,6 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 				const row = rows[0];
 				if (!row) return null;
 
-				// checking the password hash against what they typed in
 				const ok = await verifyPassword(password, row.passwordHash);
 				if (!ok) return null;
 
@@ -81,7 +82,6 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 		pages: {
 			signIn: '/signin'
 		},
-		// adapter stores discord accounts/sessions in turso; jwt still required for credentials
 		...(tursoReady
 			? {
 					adapter: DrizzleAdapter(getDb(), {
@@ -104,7 +104,18 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 					session.user.id = token.sub;
 				}
 				return session;
+			},
+			async redirect({ url, baseUrl }) {
+				if (url.startsWith('/')) return `${baseUrl}${url}`;
+				try {
+					if (new URL(url).origin === baseUrl) return url;
+				} catch {
+					return baseUrl;
+				}
+				return baseUrl;
 			}
 		}
 	};
-});
+}
+
+export const { handle, signIn, signOut } = SvelteKitAuth(buildAuthConfig);
