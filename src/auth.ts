@@ -23,7 +23,7 @@ export const { handle, signIn, signOut } = SvelteKitAuth(async (event: RequestEv
 	const dcId = env.AUTH_DISCORD_ID || env.DISCORD_CLIENT_ID;
 	const dcSecret = env.AUTH_DISCORD_SECRET || env.DISCORD_CLIENT_SECRET;
 	if (dcId && dcSecret) {
-		// dynamically setting the oauth redirect origin so discord doesn't reject the callback url
+		// aligning the sveltekit auth callback route so it matches the discord developer portal redirect uri exactly
 		const redirectUri = discordRedirectUri(event.url.origin);
 		providers.push(
 			Discord({

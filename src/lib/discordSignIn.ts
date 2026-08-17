@@ -1,5 +1,4 @@
 import { signIn } from '@auth/sveltekit/client';
-import { discordRedirectUri } from '$lib/discordAuth';
 
 export function signInWithDiscord(afterPath = '/') {
 	const origin = window.location.origin;
@@ -7,6 +6,6 @@ export function signInWithDiscord(afterPath = '/') {
 	return signIn(
 		'discord',
 		{ callbackUrl: `${origin}${next}`, redirectTo: `${origin}${next}` },
-		{ redirect_uri: discordRedirectUri(origin) }
+		{ redirect_uri: window.location.origin + '/auth/callback/discord' }
 	);
 }
