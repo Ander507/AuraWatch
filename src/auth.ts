@@ -1,12 +1,11 @@
 import { SvelteKitAuth } from '@auth/sveltekit';
 import type { SvelteKitAuthConfig } from '@auth/sveltekit';
 import Credentials from '@auth/sveltekit/providers/credentials';
-import { DrizzleAdapter } from '@auth/drizzle-adapter';
 import { eq } from 'drizzle-orm';
 import type { RequestEvent } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { getDb, isTursoConfigured } from '$lib/server/db';
-import { users, accounts, sessions } from '$lib/server/schema';
+import { users } from '$lib/server/schema';
 import { verifyPassword } from '$lib/server/password';
 import { usernameToAuthEmail } from '$lib/usernameAuth';
 import { authCookieDomain, canonicalAuthOrigin } from '$lib/discordAuth';
@@ -53,7 +52,6 @@ export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAut
 		})
 	);
 
-	const tursoReady = isTursoConfigured();
 	const cookieDomain = authCookieDomain(event.url.origin);
 	const secure = event.url.protocol === 'https:';
 	const cookiePrefix = secure ? '__Secure-' : '';
@@ -93,15 +91,6 @@ export async function buildAuthConfig(event: RequestEvent): Promise<SvelteKitAut
 				options: { ...cookieOpts, maxAge: 60 * 15 }
 			}
 		},
-		...(tursoReady
-			? {
-					adapter: DrizzleAdapter(getDb(), {
-						usersTable: users,
-						accountsTable: accounts,
-						sessionsTable: sessions
-					})
-				}
-			: {}),
 		session: {
 			strategy: 'jwt'
 		},

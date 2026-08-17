@@ -141,25 +141,25 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 	}
 	if (!isTursoConfigured()) throw redirect(303, '/signin?error=Configuration');
 
-	let userId: string | null = null;
+	let session: { sessionToken: string; expires: Date } | null = null;
 	try {
 		const exchanged = await exchangeCode(code, discordRedirectUri(url.origin));
 		if (exchanged) {
-			userId = await upsertDiscordUser(exchanged.tokens, exchanged.profile);
+			const userId = await upsertDiscordUser(exchanged.tokens, exchanged.profile);
+			session = await createUserSession(userId);
 		}
 	} catch (e) {
 		console.error('discord callback boom', e);
 	}
 
-	if (!userId) throw redirect(303, '/signin?error=OAuthCallback');
+	if (!session) throw redirect(303, '/signin?error=OAuthCallback');
 
-	const { sessionToken, expires } = await createUserSession(userId);
-	cookies.set(SESSION_COOKIE, sessionToken, {
+	cookies.set(SESSION_COOKIE, session.sessionToken, {
 		...cookieBase,
 		httpOnly: true,
 		sameSite: 'lax',
 		secure: url.protocol === 'https:',
-		expires
+		expires: session.expires
 	});
 
 	throw redirect(303, '/');

@@ -17,7 +17,7 @@ export async function createUserSession(userId: string) {
 	const db = getDb();
 	const sessionToken = randomToken();
 	const expires = new Date(Date.now() + SESSION_MS);
-	await db.insert(sessions).values({ sessionToken, userId, expires });
+	await db.insert(sessions).values({ id: `sess_${randomToken(8)}`, sessionToken, userId, expires });
 	return { sessionToken, expires };
 }
 

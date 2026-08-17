@@ -38,7 +38,8 @@ export const accounts = sqliteTable(
 );
 
 export const sessions = sqliteTable('sessions', {
-	sessionToken: text('sessionToken').primaryKey(),
+	id: text('id').primaryKey(),
+	sessionToken: text('sessionToken').notNull().unique(),
 	userId: text('userId')
 		.notNull()
 		.references(() => users.id, { onDelete: 'cascade' }),
