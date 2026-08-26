@@ -115,6 +115,13 @@
 	.app-nav-btn.active {
 		color: #fff;
 	}
+	a.app-nav-btn {
+		text-decoration: none;
+		color: #9ca3af;
+	}
+	a.app-nav-btn.active {
+		color: #fff;
+	}
 	.app-nav-icon {
 		width: 1.35rem;
 		height: 1.35rem;
@@ -1135,6 +1142,13 @@
 		flex-direction: column;
 		justify-content: flex-start;
 		background-color: var(--window);
+		background-image: repeating-linear-gradient(
+			90deg,
+			transparent,
+			transparent 11px,
+			rgba(0, 0, 0, 0.035) 11px,
+			rgba(0, 0, 0, 0.035) 12px
+		);
 	}
 
 	.desktop .rec-list-toolbar {
@@ -1172,6 +1186,7 @@
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
+		text-decoration: none;
 		color: var(--ink);
 		background: var(--panel);
 		border: 1.5px solid var(--line);
@@ -1300,6 +1315,13 @@
 		flex-shrink: 0;
 	}
 
+	.minimal .subhead {
+		margin: 0 0 0.55rem;
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--accent);
+	}
+
 	/* making sure the main container actually uses flex-col on small screens so it stacks properly */
 	.minimal .min-workspace {
 		display: flex;
@@ -1384,6 +1406,7 @@
 		font-weight: 600;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
+		text-decoration: none;
 		color: var(--text, #eee);
 		background: transparent;
 		border: 1px solid var(--line);
@@ -1989,6 +2012,7 @@
 .desktop .auth-name { color: #666; }
 a.view-tab-btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
 span.view-tab-btn { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+a.share-vibe-btn { text-decoration: none; }
 a.menu-brand { text-decoration: none; }
 a.menu-brand:hover { color: var(--accent); }
 }

@@ -3,11 +3,13 @@
 	import { fade } from 'svelte/transition';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { preloadCode, preloadData, goto } from '$app/navigation';
+	import { preloadCode, preloadData } from '$app/navigation';
 	import { signOutEverywhere } from '$lib/discordSignIn';
 	import { signInQuery } from '$lib/authRedirect';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import RecommendForm from '$lib/components/RecommendForm.svelte';
+	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
+	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
 	import { SITE } from '$lib/seo';
 	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import '$lib/styles/app-chrome.css';
@@ -157,15 +159,7 @@
 {/snippet}
 
 {#snippet viewTabs()}
-	<div class="view-tabs hidden lg:inline-flex" role="group" aria-label="Results view">
-		<a
-			class="view-tab-btn"
-			href={homeHref}
-			data-sveltekit-preload-code="eager"
-			data-sveltekit-preload-data="hover">Match</a
-		>
-		<span class="view-tab-btn active" aria-current="page">Shared List</span>
-	</div>
+	<AppViewTabs active="shared" />
 {/snippet}
 
 {#snippet authControls()}
@@ -187,7 +181,7 @@
 	<div class="share-hero">
 		<h2 class="list-title">{data.list.title}</h2>
 		{#if data.list.ownerName}
-			<p class="owner">curated by {data.list.ownerName}</p>
+			<p class="subhead owner">curated by {data.list.ownerName}</p>
 		{/if}
 	</div>
 
@@ -222,57 +216,13 @@
 {/snippet}
 
 {#snippet mobileBottomNav()}
-	<!-- moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux -->
-	<nav
-		class="app-bottom-nav fixed inset-x-0 bottom-0 z-50 border-t border-gray-800 bg-black/90 backdrop-blur-md lg:hidden"
-		aria-label="App"
-	>
-		<button
-			type="button"
-			class="app-nav-btn"
-			class:active={mobilePane === 'vibe'}
-			aria-current={mobilePane === 'vibe' ? 'page' : undefined}
-			onclick={() => (mobilePane = 'vibe')}
-		>
-			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-				<path
-					d="M4 7h16M7 12h10M9 17h6"
-					stroke="currentColor"
-					stroke-width="1.8"
-					stroke-linecap="round"
-				/>
-			</svg>
-			Vibe
-		</button>
-		<button
-			type="button"
-			class="app-nav-btn"
-			onclick={() => goto(homeHref)}
-		>
-			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-				<circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" />
-				<path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-			</svg>
-			Match
-		</button>
-		<button
-			type="button"
-			class="app-nav-btn"
-			class:active={mobilePane === 'list'}
-			aria-current={mobilePane === 'list' ? 'page' : undefined}
-			onclick={() => (mobilePane = 'list')}
-		>
-			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-				<path
-					d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"
-					stroke="currentColor"
-					stroke-width="1.8"
-					stroke-linecap="round"
-				/>
-			</svg>
-			My Lists
-		</button>
-	</nav>
+	<AppBottomNav
+		active={mobilePane === 'vibe' ? 'vibe' : 'lists'}
+		showVibe
+		onVibe={() => (mobilePane = 'vibe')}
+		onLists={() => (mobilePane = 'list')}
+		listsLabel="List"
+	/>
 {/snippet}
 
 <!-- wrapping chrome styles so they cannot leak onto Match after you visit a list -->
@@ -281,7 +231,7 @@
 	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="min-top flex flex-wrap">
-			<a class="min-brand" href={resolve('/')}>AuraWatch</a>
+			<a class="min-brand" href={resolve('/')}>{SITE.name}</a>
 			<div class="header-controls flex flex-wrap">
 				{@render viewTabs()}
 				{@render themeSwitcher()}
@@ -312,7 +262,7 @@
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="menubar flex flex-wrap">
 			<div class="menubar-left">
-				<a class="menu-brand" href={resolve('/')}>AuraWatch</a>
+				<a class="menu-brand" href={resolve('/')}>{SITE.name}</a>
 			</div>
 			<div class="menubar-right flex flex-wrap">
 				{@render viewTabs()}
@@ -355,12 +305,13 @@
 						<span class="dot yellow"></span>
 						<span class="dot green"></span>
 					</div>
-					<span class="titlebar-text">Shared List</span>
+					<span class="titlebar-text">~/AuraWatch — Shared List</span>
 					<span class="titlebar-tag">LIST</span>
 				</div>
-				<div class="window-body result-body">
-					{@render sharedList()}
-				</div>
+					<div class="window-body result-body">
+						<p class="path-line">C:\AuraWatch\list\</p>
+						{@render sharedList()}
+					</div>
 			</section>
 		</div>
 
@@ -420,17 +371,15 @@
 
 	.list-title {
 		margin: 0 0 0.25rem;
-		font-size: clamp(1.15rem, 3vw, 1.45rem);
+		font-size: clamp(1.45rem, 4vw, 2.1rem);
 		font-weight: 700;
 		letter-spacing: -0.03em;
-		line-height: 1.2;
+		line-height: 1.15;
 		color: var(--ink);
 	}
 
 	.owner {
 		margin: 0;
-		font-size: 0.78rem;
-		color: var(--muted);
 	}
 
 	.share-toast {

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
+	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
 	import { ROOM_EXPIRED_MSG } from '$lib/groupVibe';
 	import { SITE } from '$lib/seo';
 	import { hydrateUiTheme, ui } from '$lib/uiTheme.svelte';
@@ -17,23 +19,65 @@
 		error?.message || (expired ? ROOM_EXPIRED_MSG : 'This room could not be opened.')
 	);
 	let uiTheme = $derived(ui.theme);
+	let deskMode = $derived(ui.deskMode);
 </script>
 
 <svelte:head>
 	<title>{expired ? 'Room expired' : 'Room not found'} — {SITE.name}</title>
 </svelte:head>
 
-<main class={['room-error-page', uiTheme === 'minimal' && 'minimal']}>
-	<p class="eyebrow">{expired ? 'Expired' : `Error ${status}`}</p>
-	<h1 class="title">{expired ? 'This room self-destructed' : 'Room not found'}</h1>
-	<p class="body">{message}</p>
-	<p class="actions">
-		<a href={resolve('/room')}>Open a new room</a>
-		<a href={resolve('/')}>Back home</a>
-	</p>
-</main>
+<div class="share-app w-full max-w-full overflow-x-hidden">
+	{#if uiTheme === 'minimal'}
+		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+			<header class="min-top flex flex-wrap">
+				<a class="min-brand" href={resolve('/')}>{SITE.name}</a>
+				<div class="header-controls flex flex-wrap">
+					<AppViewTabs active="room" />
+				</div>
+			</header>
+			<div class="room-error-page">
+				<p class="eyebrow">{expired ? 'Expired' : `Error ${status}`}</p>
+				<h1 class="title">{expired ? 'This room self-destructed' : 'Room not found'}</h1>
+				<p class="body">{message}</p>
+				<p class="actions">
+					<a href={resolve('/room')}>Open a new room</a>
+					<a href={resolve('/')}>Back home</a>
+				</p>
+			</div>
+		</main>
+	{:else}
+		<main
+			class="desktop w-full max-w-full overflow-x-hidden max-lg:pb-[80px]"
+			class:desk-dark={deskMode === 'dark'}
+		>
+			<header class="menubar flex flex-wrap">
+				<div class="menubar-left">
+					<a class="menu-brand" href={resolve('/')}>{SITE.name}</a>
+				</div>
+				<div class="menubar-right flex flex-wrap">
+					<AppViewTabs active="room" />
+				</div>
+			</header>
+			<div class="room-error-page">
+				<p class="eyebrow">{expired ? 'Expired' : `Error ${status}`}</p>
+				<h1 class="title">{expired ? 'This room self-destructed' : 'Room not found'}</h1>
+				<p class="body">{message}</p>
+				<p class="actions">
+					<a href={resolve('/room')}>Open a new room</a>
+					<a href={resolve('/')}>Back home</a>
+				</p>
+			</div>
+		</main>
+	{/if}
+	<AppBottomNav active="room" />
+</div>
 
 <style>
+	.min-brand {
+		text-decoration: none;
+		color: inherit;
+	}
+
 	.room-error-page {
 		max-width: 28rem;
 		margin: 0 auto;

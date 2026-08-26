@@ -2759,14 +2759,12 @@
 			href={resolve('/lists')}
 			data-sveltekit-preload-data="hover"
 		>
-			<!-- renaming this to plural since users can sort things into multiple playlists now -->
 			My lists ({totalSavedCount || auraList.length})
 		</a>
 	</div>
 {/snippet}
 
 {#snippet mobileBottomNav()}
-	<!-- moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux -->
 	<nav
 		class="app-bottom-nav fixed inset-x-0 bottom-0 z-50 border-t border-gray-800 bg-black/90 backdrop-blur-md lg:hidden"
 		aria-label="App"
@@ -2788,6 +2786,23 @@
 			</svg>
 			Vibe
 		</button>
+		<a
+			class="app-nav-btn"
+			href={resolve('/room')}
+			data-sveltekit-preload-data="hover"
+		>
+			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.8" />
+				<circle cx="16" cy="9" r="2.4" stroke="currentColor" stroke-width="1.8" />
+				<path
+					d="M4.5 17.2c.5-2.2 2.1-3.4 3.5-3.4s3 1.2 3.5 3.4M12.5 17.2c.5-2.2 2.1-3.4 3.5-3.4s3 1.2 3.5 3.4"
+					stroke="currentColor"
+					stroke-width="1.8"
+					stroke-linecap="round"
+				/>
+			</svg>
+			Room
+		</a>
 		<button
 			type="button"
 			class="app-nav-btn"
@@ -2801,12 +2816,12 @@
 			</svg>
 			Match
 		</button>
-		<button
-			type="button"
+		<a
 			class="app-nav-btn"
 			class:active={mobilePane === 'list'}
 			aria-current={mobilePane === 'list' ? 'page' : undefined}
-			onclick={() => goto(resolve('/lists'))}
+			href={resolve('/lists')}
+			data-sveltekit-preload-data="hover"
 		>
 			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -2817,7 +2832,7 @@
 				/>
 			</svg>
 			My Lists
-		</button>
+		</a>
 	</nav>
 {/snippet}
 
@@ -3383,6 +3398,13 @@
 		min-height: 3.15rem;
 	}
 	.app-nav-btn.active {
+		color: #fff;
+	}
+	a.app-nav-btn {
+		text-decoration: none;
+		color: #9ca3af;
+	}
+	a.app-nav-btn.active {
 		color: #fff;
 	}
 	.app-nav-icon {
@@ -6746,6 +6768,16 @@
 	}
 	.auth-btn:hover {
 		border-color: #ff4c00;
+	}
+	.desktop .auth-btn {
+		border: 2px solid #111;
+		background: #fff;
+		color: #111;
+		border-radius: 0;
+		text-decoration: none;
+	}
+	.desktop .auth-name {
+		color: #666;
 	}
 	/* bulletproofing the center alignment so it actually floats in the middle */
 	.login-prompt-backdrop {

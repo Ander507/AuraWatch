@@ -7,6 +7,8 @@
 	import { signOutEverywhere } from '$lib/discordSignIn';
 	import { signInQuery } from '$lib/authRedirect';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
+	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
+	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
 	import {
 		ROOM_EXPIRED_MSG,
 		roomFiltersSummary,
@@ -582,15 +584,7 @@
 {/snippet}
 
 {#snippet viewTabs()}
-	<div class="view-tabs hidden lg:inline-flex" role="group" aria-label="App views">
-		<a
-			class="view-tab-btn room-nav-link active"
-			href={resolve('/room')}
-			aria-current="page">Group Room</a
-		>
-		<a class="view-tab-btn" href={homeHref}>Match</a>
-		<a class="view-tab-btn" href={resolve('/lists')}>My lists</a>
-	</div>
+	<AppViewTabs active="room" />
 {/snippet}
 
 {#snippet authControls()}
@@ -894,7 +888,7 @@
 
 <div class="share-app w-full max-w-full overflow-x-hidden">
 	{#if uiTheme === 'minimal'}
-		<main class="minimal w-full max-w-full overflow-x-hidden">
+		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
 			<header class="min-top flex flex-wrap">
 				<a class="min-brand" href={homeHref}>{SITE.name}</a>
 				<div class="header-controls flex flex-wrap">
@@ -904,24 +898,29 @@
 				</div>
 			</header>
 
-			<div class="room-page">
-				{#if roomGone}
-					<p class="room-error" role="alert">{expiredMsg}</p>
-				{/if}
-				{@render roomHero()}
-				{@render participantsPanel()}
-				{#if !roomGone}
-					{@render joinPanel()}
-				{/if}
-				{@render matchPanel()}
-				<p class="room-back">
-					<a href={resolve('/')}>← Back home</a>
-				</p>
+			<p class="min-headline">
+				hosted by {room.creatorName} · {filterLine}
+			</p>
+
+			<div class="min-workspace flex w-full max-w-full flex-col gap-4 lg:flex-row">
+				<section class="min-form w-full min-w-0 lg:w-1/2" aria-label="Join room">
+					{#if roomGone}
+						<p class="room-error" role="alert">{expiredMsg}</p>
+					{/if}
+					{@render roomHero()}
+					{#if !roomGone}
+						{@render joinPanel()}
+					{/if}
+				</section>
+				<section class="min-result w-full min-w-0 lg:w-1/2" aria-label="Participants">
+					{@render participantsPanel()}
+					{@render matchPanel()}
+				</section>
 			</div>
 		</main>
 	{:else}
 		<main
-			class="desktop w-full max-w-full overflow-x-hidden"
+			class="desktop w-full max-w-full overflow-x-hidden max-lg:pb-[80px]"
 			class:desk-dark={deskMode === 'dark'}
 		>
 			<header class="menubar flex flex-wrap">
@@ -966,10 +965,11 @@
 							<span class="dot yellow"></span>
 							<span class="dot green"></span>
 						</div>
-						<span class="titlebar-text">Participants & Match</span>
+						<span class="titlebar-text">~/AuraWatch — Match</span>
 						<span class="titlebar-tag">ROOM</span>
 					</div>
 					<div class="window-body result-body">
+						<p class="path-line">C:\AuraWatch\room\{room.slug}\match\</p>
 						{@render participantsPanel()}
 						{@render matchPanel()}
 					</div>
@@ -982,6 +982,8 @@
 			</footer>
 		</main>
 	{/if}
+
+	<AppBottomNav active="room" />
 
 	{#if shareToast}
 		<div class="share-toast" role="status" aria-live="polite" transition:fade={{ duration: 160 }}>
@@ -996,25 +998,16 @@
 		color: inherit;
 	}
 
-	.room-page {
-		max-width: 40rem;
-		margin: 0 auto;
-		padding: 1rem 1.25rem 3rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1.75rem;
-	}
-
 	.share-hero {
 		margin-bottom: 0.25rem;
 	}
 
 	.list-title {
 		margin: 0 0 0.25rem;
-		font-size: clamp(1.15rem, 3vw, 1.45rem);
+		font-size: clamp(1.45rem, 4vw, 2.1rem);
 		font-weight: 700;
 		letter-spacing: -0.03em;
-		line-height: 1.2;
+		line-height: 1.15;
 		color: var(--ink, #111);
 	}
 
@@ -1302,21 +1295,6 @@
 		background: #0c0f14;
 		border-color: #2a2f38;
 		border-left-color: #ff4c00;
-	}
-
-	.room-back {
-		margin: 0.5rem 0 0;
-		font-size: 0.78rem;
-	}
-
-	.room-back a {
-		color: var(--accent, #ff4c00);
-		text-decoration: none;
-		font-weight: 600;
-	}
-
-	.room-back a:hover {
-		text-decoration: underline;
 	}
 
 	.share-toast {

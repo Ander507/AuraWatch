@@ -7,6 +7,8 @@
 	import { signInQuery } from '$lib/authRedirect';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
+	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
+	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
 	import { parseRoomFilters } from '$lib/groupVibe';
 	import { CONTENT_LANGUAGES, DEFAULT_LANGUAGE, normalizeLanguage } from '$lib/languages';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
@@ -281,11 +283,7 @@
 {/snippet}
 
 {#snippet viewTabs()}
-	<div class="view-tabs hidden lg:inline-flex" role="group" aria-label="App views">
-		<span class="view-tab-btn room-nav-link active" aria-current="page">Group Room</span>
-		<a class="view-tab-btn" href={homeHref}>Match</a>
-		<a class="view-tab-btn" href={resolve('/lists')}>My lists</a>
-	</div>
+	<AppViewTabs active="room" />
 {/snippet}
 
 {#snippet authControls()}
@@ -404,13 +402,15 @@
 			</ul>
 		</section>
 	{:else if signedIn && data.tursoReady}
-		<p class="my-rooms-empty">No active rooms yet — create one above. They expire after 24 hours.</p>
+		<p class="empty-state my-rooms-empty">No active rooms yet — they expire after 24 hours.</p>
+	{:else}
+		<p class="empty-state my-rooms-empty">Your rooms appear here</p>
 	{/if}
 {/snippet}
 
 <div class="share-app w-full max-w-full overflow-x-hidden">
 	{#if uiTheme === 'minimal'}
-		<main class="minimal w-full max-w-full overflow-x-hidden">
+		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
 			<header class="min-top flex flex-wrap">
 				<a class="min-brand" href={homeHref}>{SITE.name}</a>
 				<div class="header-controls flex flex-wrap">
@@ -420,68 +420,66 @@
 				</div>
 			</header>
 
-			<div class="room-landing">
-				<p class="min-headline">Group Vibe Room</p>
-				<p class="room-lede">
-					Host signs in to open a room. Share the link — guests only need a nickname and their
-					vibe. Rooms expire after 24 hours.
-				</p>
+			<p class="min-headline">
+				Host a Group Vibe Room, share the link — guests only need a nickname and their vibe.
+			</p>
 
-				{#if !data.tursoReady}
-					<p class="room-error" role="alert">
-						Group rooms need the database configured. Try again later.
-					</p>
-				{:else if !signedIn}
-					<p class="room-error" role="alert">
-						Sign in to create a Group Vibe Room. Guests joining your link never need an account.
-					</p>
-					<p class="room-back">
-						<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
-					</p>
-				{:else}
-					<form class="room-form vibe-form" onsubmit={createRoom}>
-						<div class="field">
-							<label class="field-label" for="host-name">Host name</label>
-							<input
-								id="host-name"
-								class="vibe-input"
-								type="text"
-								autocomplete="nickname"
-								maxlength="48"
-								bind:value={creatorName}
-								placeholder="Your name"
-								required
-							/>
-						</div>
-						<div class="field">
-							<label class="field-label" for="room-format">Format</label>
-							<select id="room-format" class="vibe-input lang-select" bind:value={format}>
-								{#each FORMAT_OPTIONS as opt (opt.id)}
-									<option value={opt.id}>{opt.label}</option>
-								{/each}
-							</select>
-						</div>
-						{@render filterFields()}
-						{#if errorMsg}
-							<p class="room-error" role="alert">{errorMsg}</p>
-						{/if}
-						<div class="cta-row">
-							<button class="cta" type="submit" disabled={submitting}>
-								{submitting ? 'Creating…' : 'Create room'}
-							</button>
-						</div>
-					</form>
+			<div class="min-workspace flex w-full max-w-full flex-col gap-4 lg:flex-row">
+				<section class="min-form w-full min-w-0 lg:w-1/2" aria-label="Create room">
+					{#if !data.tursoReady}
+						<p class="room-error" role="alert">
+							Group rooms need the database configured. Try again later.
+						</p>
+					{:else if !signedIn}
+						<p class="room-error" role="alert">
+							Sign in to create a Group Vibe Room. Guests joining your link never need an account.
+						</p>
+						<p class="room-back">
+							<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
+						</p>
+					{:else}
+						<form class="room-form vibe-form" onsubmit={createRoom}>
+							<div class="field">
+								<label class="field-label" for="host-name">Host name</label>
+								<input
+									id="host-name"
+									class="vibe-input"
+									type="text"
+									autocomplete="nickname"
+									maxlength="48"
+									bind:value={creatorName}
+									placeholder="Your name"
+									required
+								/>
+							</div>
+							<div class="field">
+								<label class="field-label" for="room-format">Format</label>
+								<select id="room-format" class="vibe-input lang-select" bind:value={format}>
+									{#each FORMAT_OPTIONS as opt (opt.id)}
+										<option value={opt.id}>{opt.label}</option>
+									{/each}
+								</select>
+							</div>
+							{@render filterFields()}
+							{#if errorMsg}
+								<p class="room-error" role="alert">{errorMsg}</p>
+							{/if}
+							<div class="cta-row">
+								<button class="cta" type="submit" disabled={submitting}>
+									{submitting ? 'Creating…' : 'Create room'}
+								</button>
+							</div>
+						</form>
+					{/if}
+				</section>
+				<section class="min-result w-full min-w-0 lg:w-1/2" aria-label="My rooms">
 					{@render myRoomsPanel()}
-				{/if}
-
-				<p class="room-back">
-					<a href={resolve('/')}>← Back home</a>
-				</p>
+				</section>
 			</div>
 		</main>
 	{:else}
 		<main
-			class="desktop w-full max-w-full overflow-x-hidden"
+			class="desktop w-full max-w-full overflow-x-hidden max-lg:pb-[80px]"
 			class:desk-dark={deskMode === 'dark'}
 		>
 			<header class="menubar flex flex-wrap">
@@ -496,8 +494,8 @@
 				</div>
 			</header>
 
-			<div class="workspace flex w-full max-w-full justify-center">
-				<section class="window form-window room-window w-full min-w-0" aria-label="Create room">
+			<div class="workspace flex w-full max-w-full flex-col gap-4 lg:flex-row">
+				<section class="window form-window w-full min-w-0 lg:w-1/2" aria-label="Create room">
 					<div class="titlebar">
 						<div class="traffic" aria-hidden="true">
 							<span class="dot red"></span>
@@ -509,7 +507,7 @@
 					</div>
 					<div class="window-body form-body">
 						<p class="path-line">C:\AuraWatch\room\</p>
-						<h1 class="brand room-brand">{SITE.name}</h1>
+						<h1 class="brand">{SITE.name}</h1>
 						<p class="subhead">group vibe room</p>
 						<p class="lede">
 							Host signs in to open a room. Share the link — guests only need a nickname and
@@ -565,12 +563,23 @@
 									</button>
 								</div>
 							</form>
-							{@render myRoomsPanel()}
 						{/if}
+					</div>
+				</section>
 
-						<p class="room-back">
-							<a href={resolve('/')}>← Back home</a>
-						</p>
+				<section class="window result-window w-full min-w-0 lg:w-1/2" aria-label="My rooms">
+					<div class="titlebar">
+						<div class="traffic" aria-hidden="true">
+							<span class="dot red"></span>
+							<span class="dot yellow"></span>
+							<span class="dot green"></span>
+						</div>
+						<span class="titlebar-text">~/AuraWatch — Rooms</span>
+						<span class="titlebar-tag">LIVE</span>
+					</div>
+					<div class="window-body result-body">
+						<p class="path-line">C:\AuraWatch\rooms\</p>
+						{@render myRoomsPanel()}
 					</div>
 				</section>
 			</div>
@@ -581,33 +590,13 @@
 			</footer>
 		</main>
 	{/if}
+	<AppBottomNav active="room" />
 </div>
 
 <style>
 	.min-brand {
 		text-decoration: none;
 		color: inherit;
-	}
-
-	.room-landing {
-		max-width: 32rem;
-		margin: 0 auto;
-		padding: 1.25rem 1.25rem 3rem;
-	}
-
-	.room-lede {
-		margin: 0 0 1.35rem;
-		font-size: 0.9rem;
-		line-height: 1.5;
-		color: var(--muted, #9ca3af);
-	}
-
-	.room-window {
-		max-width: 36rem;
-	}
-
-	.room-brand {
-		font-size: clamp(1.85rem, 6vw, 2.6rem);
 	}
 
 	.room-form {

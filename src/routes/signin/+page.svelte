@@ -7,6 +7,7 @@
 	import { registerWithEmail, signInWithEmail } from '$lib/emailAuth';
 	import { usernameToAuthEmail } from '$lib/usernameAuth';
 	import { safeCallbackUrl } from '$lib/authRedirect';
+	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
 
 	let { data, form } = $props();
 
@@ -134,6 +135,7 @@
 		</main>
 	</section>
 </div>
+<AppBottomNav />
 
 <style>
 	.auth-shell {
@@ -144,7 +146,7 @@
 		justify-content: center;
 		width: 100%;
 		min-height: 100%;
-		padding: 1.5rem 1rem 2.5rem;
+		padding: 1.5rem 1rem 5.5rem;
 		box-sizing: border-box;
 	}
 	.auth-shell.desktop {
