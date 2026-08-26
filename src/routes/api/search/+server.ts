@@ -5,14 +5,16 @@ import { searchItunesMusic } from '$lib/server/itunesSearch';
 import { searchIgdbGames } from '$lib/server/igdbSearch';
 import { searchOpenLibrary } from '$lib/server/openLibrarySearch';
 import { searchBggGames } from '$lib/server/bggSearch';
+import { searchRobloxExperiences } from '$lib/server/robloxSearch';
 import { fetchOnMyOwnTrack, isSurronSongSecret } from '$lib/server/easterEggs';
 import { normalizeLanguage } from '$lib/languages';
 import { buildCacheKey, cacheGet, cacheSet } from '$lib/server/apiCache';
 import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const q = (url.searchParams.get('q') || url.searchParams.get('query') || '').trim();
-	// kind=music|games|books|boardgames — anything else = tmdb movies/tv
+	// kind=music|games|books|boardgames|roblox — anything else = tmdb movies/tv
 	let kind = (url.searchParams.get('kind') || url.searchParams.get('type') || 'media')
 		.toLowerCase()
 		.trim();
@@ -90,6 +92,40 @@ export const GET: RequestHandler = async ({ url }) => {
 			console.warn('board search route flopped', e);
 			return json(
 				{ ok: true, query: q, kind: 'boardgames', total: 0, results: [] },
+				{ headers: { 'Cache-Control': 'private, max-age=5' } }
+			);
+		}
+	}
+
+	if (kind === 'roblox' || kind === 'rbx' || kind === 'roblox-games') {
+		if (ROBLOX_COMING_SOON) {
+			return json(
+				{
+					ok: false,
+					comingSoon: true,
+					query: q,
+					kind: 'roblox',
+					total: 0,
+					results: [],
+					error: ROBLOX_SOON_COPY.title,
+					message: ROBLOX_SOON_COPY.body
+				},
+				{ status: 503, headers: { 'Cache-Control': 'private, max-age=30' } }
+			);
+		}
+		try {
+			const { results, total } = await searchRobloxExperiences(q, { limit });
+			if (!results.length) {
+				return json(
+					{ ok: true, query: q, kind: 'roblox', total: 0, results: [] },
+					{ headers: { 'Cache-Control': 'private, max-age=5' } }
+				);
+			}
+			return remember({ ok: true, query: q, kind: 'roblox', total, results });
+		} catch (e) {
+			console.warn('roblox search route flopped', e);
+			return json(
+				{ ok: true, query: q, kind: 'roblox', total: 0, results: [] },
 				{ headers: { 'Cache-Control': 'private, max-age=5' } }
 			);
 		}

@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { getDb, isTursoConfigured } from './db';
+import { getDb, getLibsqlClient, isTursoConfigured } from './db';
 import { lists, savedItems, users, type List, type SavedItem } from './schema';
 import {
 	normalizeEmail,
@@ -11,6 +11,29 @@ import {
 	sanitizeShortText,
 	type SavedProvider
 } from './security';
+
+let listsSchemaReady = false;
+
+/** ensure turso has the newer saved_items columns without requiring a full drizzle push TTY */
+export async function ensureListsSchema(): Promise<void> {
+	if (listsSchemaReady || !isTursoConfigured()) return;
+	const client = getLibsqlClient();
+	const alters = [
+		'ALTER TABLE saved_items ADD COLUMN metadata TEXT',
+		'ALTER TABLE saved_items ADD COLUMN created_at INTEGER'
+	];
+	for (const sql of alters) {
+		try {
+			await client.execute(sql);
+		} catch (e: any) {
+			const msg = String(e?.message || e);
+			if (!/duplicate column|already exists/i.test(msg)) {
+				console.warn('lists schema alter', msg.slice(0, 120));
+			}
+		}
+	}
+	listsSchemaReady = true;
+}
 
 function rid(prefix = '') {
 	const hex = crypto.randomUUID().replace(/-/g, '');
@@ -109,6 +132,7 @@ async function uniqueSlug(db: ReturnType<typeof getDb>): Promise<string> {
 
 /** grab their default list, or spin one up the first time they save */
 export async function getOrCreateActiveList(userId: string, title = 'My List'): Promise<List> {
+	await ensureListsSchema();
 	const db = getDb();
 	const found = await db.select().from(lists).where(eq(lists.userId, userId)).limit(1);
 	if (found[0]) return found[0];
@@ -117,6 +141,7 @@ export async function getOrCreateActiveList(userId: string, title = 'My List'): 
 
 // letting users sort stuff into multiple named playlists instead of one big pile
 export async function createPlaylist(userId: string, titleRaw: string): Promise<List> {
+	await ensureListsSchema();
 	const title = sanitizeShortText(titleRaw, 80) || 'Untitled vibe';
 	const db = getDb();
 	const row: List = {
@@ -146,6 +171,7 @@ export async function listUserPlaylists(userId: string): Promise<
 		items: SavedItem[];
 	}>
 > {
+	await ensureListsSchema();
 	const db = getDb();
 	let rows = await db.select().from(lists).where(eq(lists.userId, userId));
 	if (!rows.length) {
@@ -240,18 +266,56 @@ export type SaveItemInput = {
 	description?: string | null;
 	providers?: SavedProvider[] | string | null;
 	listId?: string | null;
+	listName?: string | null;
+	metadata?: Record<string, unknown> | string | null;
 };
 
+function serializeMetadata(raw: SaveItemInput['metadata']): string | null {
+	if (raw == null) return null;
+	if (typeof raw === 'string') {
+		const s = raw.trim();
+		if (!s) return null;
+		try {
+			JSON.parse(s);
+			return s.slice(0, 8000);
+		} catch {
+			return JSON.stringify({ note: sanitizeShortText(s, 500) }).slice(0, 8000);
+		}
+	}
+	try {
+		return JSON.stringify(raw).slice(0, 8000);
+	} catch {
+		return null;
+	}
+}
+
+export function parseItemMetadata(raw: string | null | undefined): Record<string, unknown> {
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
 export async function addSavedItem(userId: string, input: SaveItemInput): Promise<SavedItem> {
+	await ensureListsSchema();
 	const title = sanitizeShortText(input.title, 200);
 	const format = sanitizeShortText(input.format, 40) || 'media';
 	if (!title) throw new Error('missing_title');
 
 	const providersJson = sanitizeProvidersJson(input.providers);
+	const metadata = serializeMetadata(input.metadata);
 	let list: List | null = null;
 	if (input.listId) {
 		list = await getOwnedList(userId, input.listId);
 		if (!list) throw new Error('bad_list');
+	} else if (input.listName?.trim()) {
+		const name = sanitizeShortText(input.listName, 80) || 'My List';
+		const packs = await listUserPlaylists(userId);
+		list = packs.find((p) => p.list.title.toLowerCase() === name.toLowerCase())?.list ?? null;
+		if (!list) list = await createPlaylist(userId, name);
 	} else {
 		list = await getOrCreateActiveList(userId);
 	}
@@ -265,10 +329,16 @@ export async function addSavedItem(userId: string, input: SaveItemInput): Promis
 			x.format.toLowerCase() === format.toLowerCase()
 	);
 	if (hit) {
-		// refresh providers if we got newer where-to-watch data on a re-save
-		if (providersJson && providersJson !== hit.providersJson) {
-			await db.update(savedItems).set({ providersJson }).where(eq(savedItems.id, hit.id));
-			return { ...hit, providersJson };
+		const patch: Partial<SavedItem> = {};
+		if (providersJson && providersJson !== hit.providersJson) patch.providersJson = providersJson;
+		if (metadata && metadata !== hit.metadata) patch.metadata = metadata;
+		const cover = sanitizeCoverUrl(input.coverUrl);
+		if (cover && cover !== hit.coverUrl) patch.coverUrl = cover;
+		const desc = sanitizeShortText(input.description, 1200) || null;
+		if (desc && desc !== hit.description) patch.description = desc;
+		if (Object.keys(patch).length) {
+			await db.update(savedItems).set(patch).where(eq(savedItems.id, hit.id));
+			return { ...hit, ...patch };
 		}
 		return hit;
 	}
@@ -281,7 +351,9 @@ export async function addSavedItem(userId: string, input: SaveItemInput): Promis
 		externalId: sanitizeShortText(input.externalId, 80) || null,
 		coverUrl: sanitizeCoverUrl(input.coverUrl),
 		description: sanitizeShortText(input.description, 1200) || null,
-		providersJson
+		providersJson,
+		metadata,
+		createdAt: new Date()
 	};
 	await db.insert(savedItems).values(row);
 	return row;
@@ -337,4 +409,31 @@ export async function listUserSavedItems(userId: string): Promise<{
 	const packs = await listUserPlaylists(userId);
 	const first = packs[0];
 	return { list: first.list, items: first.items };
+}
+
+// handling server actions for saving items to named lists and fetching them for the user profile view
+export function mapPlaylistPack(pack: { list: List; items: SavedItem[] }) {
+	return {
+		id: pack.list.id,
+		name: pack.list.title,
+		title: pack.list.title,
+		slug: pack.list.slug,
+		createdAt: pack.list.createdAt?.toISOString?.() ?? null,
+		items: pack.items.map((i) => {
+			const meta = parseItemMetadata(i.metadata);
+			return {
+				id: i.id,
+				listId: i.listId,
+				title: i.title,
+				format: i.format,
+				coverUrl: i.coverUrl,
+				description: i.description,
+				externalId: i.externalId,
+				providers: savedItemProviders(i),
+				metadata: meta,
+				rating: typeof meta.rating === 'number' ? meta.rating : undefined,
+				createdAt: i.createdAt?.toISOString?.() ?? null
+			};
+		})
+	};
 }

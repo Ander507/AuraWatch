@@ -66,7 +66,10 @@ export type IgdbGameHit = {
 	slug: string | null;
 	coverUrl: string | null;
 	year: string | null;
+	/** Community score on a 0–10 scale (matches movie ★ display) */
 	rating: number | null;
+	/** External critic aggregate 0–100 (IGDB aggregated_rating / Metacritic-style) */
+	criticScore: number | null;
 	summary: string | null;
 	genres: string[];
 	platforms: IgdbPlatform[];
@@ -689,12 +692,23 @@ function mapGame(raw: any): IgdbGameHit | null {
 	}
 
 	const { label, maturityCert } = pickContentRating(raw?.age_ratings);
-	const rating =
-		typeof raw?.total_rating === 'number'
-			? Math.round(raw.total_rating * 10) / 10
-			: typeof raw?.rating === 'number'
-				? Math.round(raw.rating * 10) / 10
+	// IGDB community rating is 0–100 — normalize to ★ 0–10 like movies/TV
+	const community100 =
+		typeof raw?.rating === 'number'
+			? raw.rating
+			: typeof raw?.total_rating === 'number'
+				? raw.total_rating
 				: null;
+	const rating =
+		community100 != null && Number.isFinite(community100)
+			? Math.round((community100 / 10) * 10) / 10
+			: null;
+	const criticRaw =
+		typeof raw?.aggregated_rating === 'number' ? raw.aggregated_rating : null;
+	const criticScore =
+		criticRaw != null && Number.isFinite(criticRaw)
+			? Math.max(1, Math.min(100, Math.round(criticRaw)))
+			: null;
 
 	return {
 		id,
@@ -703,6 +717,7 @@ function mapGame(raw: any): IgdbGameHit | null {
 		coverUrl: coverUrlFromImageId(raw?.cover?.image_id),
 		year: yearFromUnix(raw?.first_release_date),
 		rating,
+		criticScore,
 		summary: raw?.summary ? String(raw.summary).trim() : null,
 		genres,
 		platforms,
@@ -714,7 +729,7 @@ function mapGame(raw: any): IgdbGameHit | null {
 }
 
 const GAME_FIELDS = `
-fields name,slug,first_release_date,summary,total_rating,rating,
+fields name,slug,first_release_date,summary,total_rating,rating,aggregated_rating,
   cover.image_id,
   platforms.name,platforms.abbreviation,
   genres.name,

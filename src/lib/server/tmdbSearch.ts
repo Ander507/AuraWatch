@@ -3,6 +3,7 @@
 
 import { env } from '$env/dynamic/private';
 import { cachedJsonFetch } from '$lib/server/httpCache';
+import { tmdbCriticPercent } from '$lib/server/tmdbCriticScore';
 
 const POSTER = 'https://image.tmdb.org/t/p/w500';
 const BACKDROP = 'https://image.tmdb.org/t/p/w780';
@@ -90,6 +91,8 @@ export type TmdbHit = {
 	fallbackUrls: string[];
 	year: string | null;
 	rating: number | null;
+	/** 0–100 critic-style meter mapped from TMDB vote_average */
+	criticScore: number | null;
 };
 
 type ScoredResult = {
@@ -351,7 +354,8 @@ async function enrichHitArt(hit: ScoredResult, language?: string | null): Promis
 		posterUrl,
 		fallbackUrls,
 		year: hit.year,
-		rating: hit.rating
+		rating: hit.rating,
+		criticScore: tmdbCriticPercent(hit.rating)
 	};
 }
 

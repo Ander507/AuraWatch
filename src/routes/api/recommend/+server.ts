@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { callGeminiFlash, howManyKeysWeGot } from '$lib/server/geminiRotator';
+import { safeParseGeminiJson } from '$lib/server/geminiJson';
 import { fetchWatchProviders } from '$lib/server/tmdbProviders';
 import { searchTmdbPoster } from '$lib/server/tmdbSearch';
 import { findSimilarPicks } from '$lib/server/tmdbSimilar';
@@ -60,6 +61,7 @@ import {
 	type SeriesLengthId
 } from '$lib/server/seriesLength';
 import { fetchTvSeasonCount } from '$lib/server/tmdbTvDetails';
+import { tmdbCriticPercent } from '$lib/server/tmdbCriticScore';
 import {
 	maturityPromptBlock,
 	maturityStrictRule,
@@ -76,14 +78,22 @@ import {
 import { howManyIgdbCreds } from '$lib/server/igdbAuth';
 import { bookReadLinks, lookupBookOrManga } from '$lib/server/openLibrarySearch';
 import { bggLinks, lookupBggGame } from '$lib/server/bggSearch';
+import {
+	formatPlayerCount,
+	lookupRobloxExperience,
+	robloxLinks
+} from '$lib/server/robloxSearch';
 import { resolveSnackPairing } from '$lib/server/snackPairing';
 import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 import {
 	buildBoardGamesConciergePrompt,
 	buildBooksConciergePrompt,
 	buildFullVibePrompt,
+	buildRobloxConciergePrompt,
 	parseGeminiBoardRecs,
 	parseGeminiBookRecs,
+	parseGeminiRobloxRecs,
 	parseGeminiVibeBundle
 } from '$lib/server/extraFormatPrompts';
 
@@ -130,6 +140,7 @@ function parseOneFormat(raw: any): MediaFormat | null {
 		t === 'tabletop'
 	)
 		return 'boardgames';
+	if (t === 'roblox' || t === 'rbx' || t === 'roblox-games' || t === 'robloxgames') return 'roblox';
 	if (
 		t === 'fullvibe' ||
 		t === 'full-vibe' ||
@@ -160,7 +171,14 @@ function normalizeTypes(body: any): MediaFormat[] {
 	}
 
 	// exclusive lanes — first one in this priority list wins
-	for (const ex of ['fullvibe', 'boardgames', 'books', 'games', 'songs'] as MediaFormat[]) {
+	for (const ex of [
+		'fullvibe',
+		'roblox',
+		'boardgames',
+		'books',
+		'games',
+		'songs'
+	] as MediaFormat[]) {
 		if (out.includes(ex)) return [ex];
 	}
 	return out.filter((t) => !isExclusiveFormat(t));
@@ -176,6 +194,7 @@ function formatLabel(types: MediaFormat[]): string {
 			if (t === 'games') return 'games';
 			if (t === 'books') return 'books & manga';
 			if (t === 'boardgames') return 'board games';
+			if (t === 'roblox') return 'Roblox experiences';
 			if (t === 'fullvibe') return 'full vibe itinerary';
 			return 'songs';
 		})
@@ -214,84 +233,8 @@ type GeminiRec = {
 	searchQuery: string;
 };
 
-function stripJsonFences(raw: string) {
-	// gemini loves ```json wrappers for some reason
-	let s = (raw || '').trim();
-	if (s.startsWith('```')) {
-		s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-	}
-	const a = s.search(/[\[{]/);
-	const b = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
-	if (a !== -1 && b > a) s = s.slice(a, b + 1);
-	return s;
-}
-
-// gemini keeps putting raw double quotes inside strings and breaking the parser, stripping them here
-function escapeInternalQuotes(jsonish: string): string {
-	let out = '';
-	let inString = false;
-	let escaped = false;
-	for (let i = 0; i < jsonish.length; i++) {
-		const c = jsonish[i];
-		if (escaped) {
-			out += c;
-			escaped = false;
-			continue;
-		}
-		if (c === '\\' && inString) {
-			out += c;
-			escaped = true;
-			continue;
-		}
-		if (c === '"') {
-			if (!inString) {
-				inString = true;
-				out += c;
-			} else {
-				const rest = jsonish.slice(i + 1);
-				if (/^\s*[,:}\]]/.test(rest) || /^\s*$/.test(rest)) {
-					inString = false;
-					out += c;
-				} else {
-					out += '\\"';
-				}
-			}
-			continue;
-		}
-		out += c;
-	}
-	return out;
-}
-
-// gemini json is haunted. we try a few times before giving up
-function repairJsonText(raw: string): string {
-	let s = stripJsonFences(raw);
-	s = s.replace(/^\uFEFF/, '');
-	// curly quotes from copy-paste brains
-	s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
-	s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
-	s = s.replace(/,\s*([}\]])/g, '$1'); // trailing commas my beloved
-	s = escapeInternalQuotes(s);
-	return s;
-}
-
 function safeParseJson(raw: string): any {
-	const tries = [
-		repairJsonText(raw),
-		stripJsonFences(raw),
-		escapeInternalQuotes(stripJsonFences(raw)),
-		(raw || '').trim()
-	];
-	let lastErr: any = null;
-	for (const t of tries) {
-		if (!t) continue;
-		try {
-			return JSON.parse(t);
-		} catch (e) {
-			lastErr = e;
-		}
-	}
-	throw lastErr || new Error('model spat out unparseable junk');
+	return safeParseGeminiJson(raw);
 }
 
 function buildMusicConciergePrompt(opts: {
@@ -834,6 +777,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const isGames = selectedTypes.length === 1 && selectedTypes[0] === 'games';
 	const isBooks = selectedTypes.length === 1 && selectedTypes[0] === 'books';
 	const isBoardGames = selectedTypes.length === 1 && selectedTypes[0] === 'boardgames';
+	const isRoblox = selectedTypes.length === 1 && selectedTypes[0] === 'roblox';
 	const isFullVibe = selectedTypes.length === 1 && selectedTypes[0] === 'fullvibe';
 
 	// parking board game picks until the bgg token actually clears review
@@ -844,6 +788,18 @@ export const POST: RequestHandler = async ({ request }) => {
 				comingSoon: true,
 				error: BOARD_GAMES_SOON_COPY.title,
 				message: BOARD_GAMES_SOON_COPY.body
+			},
+			{ status: 503 }
+		);
+	}
+
+	if (isRoblox && ROBLOX_COMING_SOON) {
+		return json(
+			{
+				ok: false,
+				comingSoon: true,
+				error: ROBLOX_SOON_COPY.title,
+				message: ROBLOX_SOON_COPY.body
 			},
 			{ status: 503 }
 		);
@@ -969,7 +925,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// 🤫 Movies/TV: surronster vibe → newest @surronster uploads
-	if (!isSongs && !isGames && !isBooks && !isBoardGames && !isFullVibe && isSurronsterVibeSecret(secretHaystack)) {
+	if (!isSongs && !isGames && !isBooks && !isBoardGames && !isRoblox && !isFullVibe && isSurronsterVibeSecret(secretHaystack)) {
 		const vids = await fetchSurronsterNewest(REC_LIMIT);
 		if (!vids.length) throw error(502, 'could not load Sur Ronster videos');
 		const recommendations = surronsterVidRecommendations(vids);
@@ -1011,7 +967,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		try {
 			// json mode + fat token budget (3072) last time it truncated mid-object lol
-			const gemini = await callGeminiFlash(musicPrompt, { json: true, maxOutputTokens: 3072 });
+			const gemini = await callGeminiFlash(musicPrompt, { json: true, maxOutputTokens: 4096 });
 			let songRecs: GeminiSongRec[];
 			try {
 				songRecs = parseGeminiSongRecs(gemini.text);
@@ -1110,7 +1066,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		const priceLabel = priceRangeBadge(priceRange);
 
 		try {
-			const gemini = await callGeminiFlash(gamesPrompt, { json: true, maxOutputTokens: 3072 });
+			const gemini = await callGeminiFlash(gamesPrompt, { json: true, maxOutputTokens: 4096 });
 			let gameRecs: GeminiGameRec[];
 			try {
 				gameRecs = parseGeminiGameRecs(gemini.text);
@@ -1171,6 +1127,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					mediaType: 'Game',
 					seasonInfo: year,
 					rating: hit?.rating ?? undefined,
+					criticScore: hit?.criticScore ?? undefined,
 					content_rating: hit?.contentRating || undefined,
 					price_range: priceRange || undefined,
 					priceLabel: priceLabel || undefined,
@@ -1246,7 +1203,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 
 		try {
-			const gemini = await callGeminiFlash(booksPrompt, { json: true, maxOutputTokens: 3072 });
+			const gemini = await callGeminiFlash(booksPrompt, { json: true, maxOutputTokens: 4096 });
 			let bookRecs;
 			try {
 				bookRecs = parseGeminiBookRecs(gemini.text);
@@ -1351,7 +1308,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			for (let attempt = 0; attempt < 2; attempt++) {
 				const gemini = await callGeminiFlash(boardPrompt, {
 					json: true,
-					maxOutputTokens: 3072
+					maxOutputTokens: 4096
 				});
 				try {
 					// making sure we actually use the repair pass for board games so it stops exploding
@@ -1409,6 +1366,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					year,
 					rating,
 					vote_average: rating,
+					criticScore: hit?.criticScore ?? undefined,
 					searchQuery: rec.searchQuery,
 					platforms: players ? [players] : undefined,
 					complexity: rec.complexity || undefined,
@@ -1457,6 +1415,134 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
+	// roblox = gemini → public roblox omni-search + games/thumbnails for play links
+	if (isRoblox) {
+		if (howManyKeysWeGot() <= 0) {
+			throw error(503, 'Roblox recommendations need GEMINI_API_KEYS configured');
+		}
+
+		const robloxPrompt = buildRobloxConciergePrompt({
+			genres: selectedGenres,
+			prompt: notesOnly,
+			likeTitles,
+			decade,
+			notesWeight,
+			maturity,
+			antiVibe,
+			language
+		});
+
+		try {
+			let robloxRecs: ReturnType<typeof parseGeminiRobloxRecs> = [];
+			let parseFailedTwice = false;
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const gemini = await callGeminiFlash(robloxPrompt, {
+					json: true,
+					maxOutputTokens: 4096
+				});
+				try {
+					robloxRecs = parseGeminiRobloxRecs(gemini.text);
+					parseFailedTwice = false;
+					break;
+				} catch (parseErr: any) {
+					console.error(
+						'roblox json go boom',
+						attempt === 0 ? '(retrying once)' : '(gave up)',
+						parseErr?.message || parseErr
+					);
+					if (attempt === 0) continue;
+					parseFailedTwice = true;
+				}
+			}
+			if (parseFailedTwice) {
+				throw new Error('Roblox model returned bad JSON — try again');
+			}
+			if (!robloxRecs.length) throw new Error('gemini returned no Roblox experiences');
+
+			const recommendations = [];
+			for (const rec of robloxRecs) {
+				const hit = await lookupRobloxExperience({
+					searchQuery: rec.searchQuery || rec.title,
+					title: rec.title
+				});
+				const title = hit?.title || rec.title;
+				const cover = hit?.coverUrl || hit?.image || hit?.poster_path || '';
+				const year = hit?.year || rec.releaseYear || undefined;
+				const rating = hit?.vote_average ?? hit?.rating ?? undefined;
+				const pitch = rec.matchReason || hit?.overview || hit?.description || '';
+				const links = hit ? robloxLinks(hit) : [];
+				const players = formatPlayerCount(hit?.playerCount ?? null);
+				const genres = [
+					...(rec.actualGenres || []),
+					...(hit?.genre && !rec.actualGenres?.includes(hit.genre) ? [hit.genre] : [])
+				].filter(Boolean);
+
+				recommendations.push({
+					title,
+					cover,
+					poster_path: cover || null,
+					image: cover || null,
+					genres,
+					pitch,
+					overview: pitch,
+					description: hit?.description || pitch,
+					mediaType: 'Roblox',
+					format: hit?.format || 'Roblox',
+					seasonInfo: year,
+					release_date: year,
+					releaseYear: year,
+					year,
+					rating,
+					vote_average: rating,
+					searchQuery: rec.searchQuery,
+					platforms: players ? [players, 'Roblox'] : ['Roblox'],
+					creator: hit?.creator || undefined,
+					content_rating: hit?.maturity || undefined,
+					providers: links,
+					storeLinks: links.map((l) => ({
+						platform: l.name,
+						url: l.url,
+						store: l.name
+					})),
+					watch_link: hit?.playUrl || links[0]?.url || null,
+					listen_url: hit?.playUrl || null,
+					store_name: 'Roblox',
+					roblox_universe_id: hit?.universeId,
+					roblox_place_id: hit?.placeId,
+					player_count: hit?.playerCount ?? null,
+					likeTitle: likeLabel || undefined,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					kind: 'roblox' as const
+				});
+				if (recommendations.length >= REC_LIMIT) break;
+			}
+
+			if (!recommendations.length) throw new Error('no Roblox experiences resolved from catalog');
+
+			return remember({
+				ok: true,
+				mocked: false,
+				mode: 'roblox',
+				params: {
+					type: selectedType,
+					types: selectedTypes,
+					decade: decade?.id || null,
+					maturity,
+					notesWeight,
+					userGenres: selectedGenres,
+					prompt: vibePrompt,
+					likeTitles: likeTitles.length ? likeTitles : undefined,
+					language
+				},
+				recommendation: recommendations[0],
+				recommendations
+			});
+		} catch (e: any) {
+			console.error('roblox recommend failed', e?.message || e);
+			throw error(502, e?.message || 'Roblox recommendation failed');
+		}
+	}
+
 	// full vibe itinerary — one watch + one listen + one snack, same mood
 	if (isFullVibe) {
 		if (howManyKeysWeGot() <= 0) {
@@ -1477,7 +1563,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		try {
 			const gemini = await callGeminiFlash(vibeBundlePrompt, {
 				json: true,
-				maxOutputTokens: 2048
+				maxOutputTokens: 4096
 			});
 			let bundle;
 			try {
@@ -1540,6 +1626,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					mediaType: bundle.watch.mediaType,
 					seasonInfo: bundle.watch.releaseYear || tmdb?.year || undefined,
 					rating: tmdb?.rating ?? undefined,
+					criticScore: tmdb?.criticScore ?? tmdbCriticPercent(tmdb?.rating) ?? undefined,
 					providers: watch.providers,
 					watch_link: watch.watchLink,
 					trailer_youtube_key: trailerKey || undefined,
@@ -1668,6 +1755,8 @@ export const POST: RequestHandler = async ({ request }) => {
 							number_of_seasons: seasons.number_of_seasons || undefined,
 							seasons_label: seasons.seasons_label || undefined,
 							rating: similar.rating ?? undefined,
+							criticScore:
+								similar.criticScore ?? tmdbCriticPercent(similar.rating) ?? undefined,
 							content_rating: certification || undefined,
 							releaseYear: similar.year || undefined,
 							searchQuery,
@@ -1734,7 +1823,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				antiVibe,
 				language
 			});
-			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 3072 });
+			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 4096 });
 			const parsedRecs = parseGeminiRecs(gemini.text);
 			if (!parsedRecs.length) throw new Error('gemini returned no recommendations');
 			const decadeFiltered = decade
@@ -1792,6 +1881,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					number_of_seasons: seasons.number_of_seasons || undefined,
 					seasons_label: seasons.seasons_label || undefined,
 					rating: tmdb?.rating ?? undefined,
+					criticScore: tmdb?.criticScore ?? tmdbCriticPercent(tmdb?.rating) ?? undefined,
 					content_rating: gate.certification || undefined,
 					releaseYear: rec.releaseYear,
 					searchQuery: rec.searchQuery,
@@ -1830,7 +1920,11 @@ export const POST: RequestHandler = async ({ request }) => {
 				recommendations
 			});
 		} catch (e: any) {
-			console.error('gemini concierge failed, catalog fallback', e?.message || e);
+			console.error(
+				'gemini concierge failed, catalog fallback',
+				e?.message || e,
+				e?.stack ? String(e.stack).slice(0, 200) : ''
+			);
 			// fall through to catalog
 		}
 	}
@@ -1938,6 +2032,10 @@ export const POST: RequestHandler = async ({ request }) => {
 					seasonsLabel(hit.seasons > 0 ? hit.seasons : null) ||
 					undefined,
 				rating: tmdb?.rating ?? hit.rating,
+				criticScore:
+					tmdb?.criticScore ??
+					tmdbCriticPercent(tmdb?.rating ?? hit.rating) ??
+					undefined,
 				content_rating: gate.certification || undefined,
 				releaseYear: String(hit.year),
 				searchQuery: hit.title,

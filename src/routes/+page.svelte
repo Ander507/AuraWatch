@@ -3,7 +3,7 @@
 	import { quintOut } from 'svelte/easing';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
 	import { signOutEverywhere } from '$lib/discordSignIn';
@@ -25,6 +25,7 @@
 	import { rollSurpriseMe } from '$lib/surpriseMe';
 	import { SITE } from '$lib/seo';
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+	import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 	import { signInWithDiscord } from '$lib/discordSignIn';
 	import { registerWithEmail, signInWithEmail } from '$lib/emailAuth';
 	import { usernameToAuthEmail } from '$lib/usernameAuth';
@@ -34,7 +35,7 @@
 		type AuraListItem
 	} from '$lib/auraList';
 	import { formatLetterboxdChecklist } from '$lib/letterboxdExport';
-	import { ui, setUiTheme, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { ui, setUiTheme, setDeskMode, hydrateUiTheme, applyThemeToDocument } from '$lib/uiTheme.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	const REGION_KEY = 'aurawatch_region';
@@ -50,7 +51,8 @@
 		{ id: 'songs' as const, label: 'Songs' },
 		{ id: 'games' as const, label: 'Games' },
 		{ id: 'books' as const, label: 'Books & Manga' },
-		{ id: 'boardgames' as const, label: 'Board Games' }
+		{ id: 'boardgames' as const, label: 'Board Games' },
+		{ id: 'roblox' as const, label: 'Roblox' }
 	];
 
 	const DECADE_OPTIONS = [
@@ -252,10 +254,29 @@
 			'Campaign',
 			'Light',
 			'Heavy'
+		],
+		roblox: [
+			'Obby',
+			'Parkour',
+			'Roleplay',
+			'Tycoon',
+			'Simulator',
+			'Horror',
+			'Survival',
+			'PvP',
+			'Fighting',
+			'Story',
+			'Adventure',
+			'Pet',
+			'Racing',
+			'Social',
+			'Fashion',
+			'Tower Defense'
 		]
 	};
 
 	let uiTheme = $derived(ui.theme);
+	let deskMode = $derived(ui.deskMode);
 	let selectedTypes = $state<FormatId[]>([]);
 	let selectedGenres = $state<string[]>([]);
 	let vibePrompt = $state('');
@@ -407,7 +428,7 @@
 		artist?: string;
 		author?: string;
 		creator?: string;
-		kind?: 'song' | 'media' | 'game' | 'book' | 'boardgame' | 'vibe' | 'snack';
+		kind?: 'song' | 'media' | 'game' | 'book' | 'boardgame' | 'roblox' | 'vibe' | 'snack';
 		listen_url?: string;
 		preview_url?: string;
 		trailer_youtube_key?: string;
@@ -419,6 +440,7 @@
 		storeLinks?: Array<{ platform: string; url: string; store?: string }>;
 		complexity?: string;
 		playingTime?: number;
+		criticScore?: number;
 		vibeLabel?: string;
 		watch?: Rec;
 		music?: Rec;
@@ -432,8 +454,12 @@
 	let isBoardGames = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'boardgames');
 	// bgg api is still pending approval, parking the tabletop lane so nothing half-broken ships
 	let boardGamesSoon = $derived(isBoardGames && BOARD_GAMES_COMING_SOON);
+	let isRoblox = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'roblox');
+	let robloxSoon = $derived(isRoblox && ROBLOX_COMING_SOON);
 	let isFullVibe = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'fullvibe');
-	let isExclusiveLane = $derived(isSongs || isGames || isBooks || isBoardGames || isFullVibe);
+	let isExclusiveLane = $derived(
+		isSongs || isGames || isBooks || isBoardGames || isRoblox || isFullVibe
+	);
 	// only show the tmdb language stuff if we're actually looking at movies/tv/anime
 	let isMediaLane = $derived(!isExclusiveLane);
 	let showSeriesLength = $derived(
@@ -447,6 +473,7 @@
 		if (isGames) return GENRES_BY_FORMAT.games;
 		if (isBooks) return GENRES_BY_FORMAT.books;
 		if (isBoardGames) return GENRES_BY_FORMAT.boardgames;
+		if (isRoblox) return GENRES_BY_FORMAT.roblox;
 		if (isFullVibe) return ALL_MEDIA_GENRES;
 		if (!selectedTypes.length) return ALL_MEDIA_GENRES;
 		const set = new Set<string>();
@@ -497,12 +524,13 @@
 			if (item.seasonInfo) parts.push(item.seasonInfo);
 			return parts.join(' · ');
 		}
-		if (item.kind === 'game' || item.mediaType === 'Game') {
+		const isGame = item.kind === 'game' || item.mediaType === 'Game';
+		const isBoard = item.kind === 'boardgame' || item.mediaType === 'Board Game';
+		if (isGame || isBoard) {
 			if (item.platforms?.length) parts.push(item.platforms.slice(0, 3).join(', '));
 			else if (item.mediaType) parts.push(item.mediaType);
 			if (item.seasonInfo) parts.push(item.seasonInfo);
-			// age rating shown as badge — skip here
-			if (item.rating != null) parts.push(`★ ${formatRating(item.rating)}`);
+			// scores render in the Metacritic-style breakdown row below
 			return parts.join(' · ');
 		}
 		if (item.mediaType) parts.push(item.mediaType);
@@ -520,7 +548,37 @@
 		}
 		// age rating shown as badge — skip here
 		if (item.rating != null) parts.push(`★ ${formatRating(item.rating)}`);
+		// adding rotten tomatoes ratings next to the user score so users can see critic consensus at a glance
+		if (
+			item.criticScore != null &&
+			item.kind !== 'roblox' &&
+			item.kind !== 'book' &&
+			item.mediaType !== 'Roblox' &&
+			item.mediaType !== 'Book' &&
+			item.mediaType !== 'Manga'
+		) {
+			parts.push(`🍅 ${Math.round(item.criticScore)}%`);
+		}
 		return parts.join(' · ');
+	}
+
+	function hasScoreBreakdown(item: Rec): boolean {
+		const gameOrBoard =
+			item.kind === 'game' ||
+			item.kind === 'boardgame' ||
+			item.mediaType === 'Game' ||
+			item.mediaType === 'Board Game';
+		return gameOrBoard && (item.rating != null || item.criticScore != null);
+	}
+
+	function criticBand(score: number): 'high' | 'mid' | 'low' {
+		if (score >= 75) return 'high';
+		if (score >= 50) return 'mid';
+		return 'low';
+	}
+
+	function criticLabel(item: Rec): string {
+		return item.kind === 'boardgame' || item.mediaType === 'Board Game' ? 'Geek' : 'Critic';
 	}
 
 	function likeLabel(item: Rec): string {
@@ -532,6 +590,7 @@
 		if (item.kind === 'book' || item.mediaType === 'Book' || item.mediaType === 'Manga')
 			return 'book picks';
 		if (item.kind === 'boardgame' || item.mediaType === 'Board Game') return 'tabletop picks';
+		if (item.kind === 'roblox' || item.mediaType === 'Roblox') return 'roblox picks';
 		if (item.kind === 'vibe') return item.vibeLabel || 'full vibe';
 		return "tonight's pick";
 	}
@@ -563,6 +622,7 @@
 
 	function storeCtaLabel(link: { platform: string; store?: string }): string {
 		const name = link.platform || link.store || 'Store';
+		if (/roblox/i.test(name)) return 'Play on Roblox';
 		return `View on ${name}`;
 	}
 
@@ -645,6 +705,10 @@
 		return item.kind === 'boardgame' || item.mediaType === 'Board Game';
 	}
 
+	function isRobloxRec(item: Rec): boolean {
+		return item.kind === 'roblox' || item.mediaType === 'Roblox';
+	}
+
 	function isVibeRec(item: Rec): boolean {
 		return item.kind === 'vibe' || item.mediaType === 'Vibe Package';
 	}
@@ -688,11 +752,13 @@
 						? 'book'
 						: raw?.kind === 'boardgame' || raw?.mediaType === 'Board Game'
 							? 'boardgame'
-							: raw?.kind === 'vibe' || raw?.mediaType === 'Vibe Package'
-								? 'vibe'
-								: raw?.kind === 'snack'
-									? 'snack'
-									: 'media';
+							: raw?.kind === 'roblox' || raw?.mediaType === 'Roblox'
+								? 'roblox'
+								: raw?.kind === 'vibe' || raw?.mediaType === 'Vibe Package'
+									? 'vibe'
+									: raw?.kind === 'snack'
+										? 'snack'
+										: 'media';
 		return {
 			title: raw?.title || '???',
 			cover: raw?.cover || raw?.poster_path || raw?.image || '',
@@ -709,6 +775,14 @@
 							? String(raw.release_date)
 							: undefined),
 			rating: raw?.rating ?? raw?.vote_average,
+			criticScore:
+				typeof raw?.criticScore === 'number'
+					? raw.criticScore
+					: typeof raw?.rtScore === 'number'
+						? raw.rtScore
+						: typeof raw?.tomatoMeter === 'number'
+							? raw.tomatoMeter
+							: undefined,
 			providers: raw?.providers || [],
 			region: raw?.region,
 			watchLink: raw?.watch_link || raw?.watchLink || raw?.recipeUrl || null,
@@ -858,6 +932,7 @@
 			kind === 'game' ||
 			kind === 'book' ||
 			kind === 'boardgame' ||
+			kind === 'roblox' ||
 			kind === 'snack' ||
 			kind === 'vibe'
 		)
@@ -869,6 +944,7 @@
 			mt === 'book' ||
 			mt === 'manga' ||
 			mt === 'board game' ||
+			mt === 'roblox' ||
 			mt === 'vibe package'
 		)
 			return false;
@@ -1184,12 +1260,7 @@
 	});
 
 	$effect(() => {
-		const theme = uiTheme;
-		if (typeof document === 'undefined') return;
-		document.documentElement.dataset.ui = theme;
-		document.body.style.background = theme === 'minimal' ? '#0E0E12' : '#7b8a9d';
-		const meta = document.querySelector('meta[name="theme-color"]');
-		if (meta) meta.setAttribute('content', theme === 'minimal' ? '#0E0E12' : '#7B8A9D');
+		applyThemeToDocument(uiTheme, deskMode);
 	});
 
 	function persistRegion() {
@@ -1218,7 +1289,7 @@
 	}
 
 	function toggleFormat(id: FormatId) {
-		const exclusiveIds: FormatId[] = ['songs', 'games', 'books', 'boardgames'];
+		const exclusiveIds: FormatId[] = ['songs', 'games', 'books', 'boardgames', 'roblox'];
 		const wasExclusive = exclusiveIds.includes(selectedTypes[0] as FormatId) && selectedTypes.length === 1;
 		let next: FormatId[];
 		if (exclusiveIds.includes(id)) next = [id];
@@ -1281,10 +1352,15 @@
 			return;
 		}
 
-		// don't hit the api while tabletop is parked behind the bgg gate
+		// don't hit the api while tabletop/roblox is parked behind the gate
 		if (boardGamesSoon) {
 			errMsg = BOARD_GAMES_SOON_COPY.body;
 			showShareToast(BOARD_GAMES_SOON_COPY.title);
+			return;
+		}
+		if (robloxSoon) {
+			errMsg = ROBLOX_SOON_COPY.body;
+			showShareToast(ROBLOX_SOON_COPY.title);
 			return;
 		}
 
@@ -1372,10 +1448,15 @@
 	}
 
 	async function surpriseMe() {
-		// surprise me still shouldn't fire board game rolls until the token lands
+		// surprise me still shouldn't fire gated rolls until the token lands
 		if (boardGamesSoon) {
 			errMsg = BOARD_GAMES_SOON_COPY.body;
 			showShareToast(BOARD_GAMES_SOON_COPY.title);
+			return;
+		}
+		if (robloxSoon) {
+			errMsg = ROBLOX_SOON_COPY.body;
+			showShareToast(ROBLOX_SOON_COPY.title);
 			return;
 		}
 		const roll = rollSurpriseMe(selectedTypes);
@@ -1435,15 +1516,20 @@
 		savingListId = listId;
 
 		const format = recSaveFormat(item);
-		const fd = new FormData();
-		fd.set('title', item.title);
-		fd.set('format', String(format));
-		fd.set('coverUrl', item.cover || '');
-		fd.set('description', item.pitch || '');
-		fd.set('listId', listId);
-		if (item.providers?.length) {
-			fd.set('providers', JSON.stringify(item.providers));
-		}
+		const payload = {
+			title: item.title,
+			format: String(format),
+			coverUrl: item.cover || '',
+			description: item.pitch || '',
+			listId,
+			providers: item.providers?.length ? item.providers : undefined,
+			metadata: {
+				pitch: item.pitch || '',
+				rating: item.rating ?? undefined,
+				mediaType: item.mediaType || undefined,
+				year: item.seasonInfo || undefined
+			}
+		};
 
 		// slam the modal shut before turso roundtrips so save doesn't feel like dial-up
 		const prevOverride = playlistOverride;
@@ -1452,9 +1538,13 @@
 		showShareToast('Saved to playlist');
 
 		try {
-			const res = await fetch('?/saveItem', { method: 'POST', body: fd });
-			const result = deserialize(await res.text());
-			if (result.type !== 'success') throw new Error('save failed');
+			const res = await fetch('/api/lists/save', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) throw new Error(body?.message || 'save failed');
 			await invalidateAll();
 			playlistOverride = null;
 		} catch (e) {
@@ -1476,32 +1566,43 @@
 			return;
 		}
 		playlistBusy = true;
-		const fd = new FormData();
-		fd.set('title', title);
 		try {
+			const pending = savePickerItem;
+			if (pending) {
+				const format = recSaveFormat(pending);
+				const res = await fetch('/api/lists/save', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({
+						title: pending.title,
+						format: String(format),
+						coverUrl: pending.cover || '',
+						description: pending.pitch || '',
+						listName: title,
+						providers: pending.providers?.length ? pending.providers : undefined,
+						metadata: {
+							pitch: pending.pitch || '',
+							rating: pending.rating ?? undefined,
+							mediaType: pending.mediaType || undefined
+						}
+					})
+				});
+				const body = await res.json().catch(() => ({}));
+				if (!res.ok) throw new Error(body?.message || 'save failed');
+				newPlaylistTitle = '';
+				savePickerItem = null;
+				showShareToast('Saved to playlist');
+				await invalidateAll();
+				return;
+			}
+
+			const fd = new FormData();
+			fd.set('title', title);
 			const res = await fetch('?/createPlaylist', { method: 'POST', body: fd });
 			const result = deserialize(await res.text());
 			if (result.type !== 'success') throw new Error('create failed');
-			const created = result.data as
-				| { listId?: string; slug?: string; title?: string }
-				| undefined;
-			const listId = created?.listId;
 			newPlaylistTitle = '';
 			showShareToast('Playlist created');
-			if (savePickerItem && listId) {
-				playlistOverride = [
-					...clonePlaylists(cloudPlaylists),
-					{
-						id: listId,
-						slug: created?.slug || listId,
-						title: created?.title || title,
-						items: []
-					}
-				];
-				playlistBusy = false;
-				await saveToPlaylist(listId);
-				return;
-			}
 			await invalidateAll();
 		} catch (e) {
 			console.warn('create playlist flopped', e);
@@ -1622,6 +1723,8 @@
 				<p class="field-hint">Wildcard mode — movie/show + music + snack for one vibe</p>
 			{:else if boardGamesSoon}
 				<p class="field-hint">{BOARD_GAMES_SOON_COPY.eyebrow} — picks stay parked until review clears</p>
+			{:else if robloxSoon}
+				<p class="field-hint">{ROBLOX_SOON_COPY.eyebrow} — picks stay parked until catalog is stable</p>
 			{/if}
 		</div>
 
@@ -1658,13 +1761,15 @@
 				<label class="field-label" for="like-title">
 					{isGames
 						? 'Like these games'
-						: isBoardGames
-							? 'Like these board games'
-							: isBooks
-								? 'Like these books'
-								: isSongs
-									? 'Like these'
-									: 'Like these titles'}
+						: isRoblox
+							? 'Like these Roblox experiences'
+							: isBoardGames
+								? 'Like these board games'
+								: isBooks
+									? 'Like these books'
+									: isSongs
+										? 'Like these'
+										: 'Like these titles'}
 					<span class="optional">(optional)</span>
 				</label>
 				<LikeTitleSelect
@@ -1674,25 +1779,29 @@
 					variant={uiTheme === 'desktop' ? 'desktop' : 'dark'}
 					kind={isGames
 						? 'games'
-						: isBoardGames
-							? 'boardgames'
-							: isBooks
-								? 'books'
-								: isSongs
-									? 'music'
-									: 'media'}
+						: isRoblox
+							? 'roblox'
+							: isBoardGames
+								? 'boardgames'
+								: isBooks
+									? 'books'
+									: isSongs
+										? 'music'
+										: 'media'}
 					language={selectedLanguage}
 				/>
 				<p class="field-hint">
 					{isGames
 						? 'Add games — find titles in the same vibe'
-						: isBoardGames
-							? 'Add tabletop titles — find games in the same vibe'
-							: isBooks
-								? 'Add books or manga — find neighbors in tone'
-								: isSongs
-									? 'Add songs or artists — find tracks in the same vibe'
-									: 'Add one or more — find something in the same vein'}
+						: isRoblox
+							? 'Add Roblox experiences — find neighbors in the same vibe'
+							: isBoardGames
+								? 'Add tabletop titles — find games in the same vibe'
+								: isBooks
+									? 'Add books or manga — find neighbors in tone'
+									: isSongs
+										? 'Add songs or artists — find tracks in the same vibe'
+										: 'Add one or more — find something in the same vein'}
 				</p>
 			</div>
 		{/if}
@@ -1788,15 +1897,17 @@
 				onkeydown={onKeyDown}
 				placeholder={isFullVibe
 					? 'rainy sunday cozy, neon date night, slow morning…'
-					: isBoardGames
-						? 'cozy 2-player engine builder, loud party game…'
-						: isBooks
-							? 'quiet fantasy, bingeable manga, literary thriller…'
-							: isGames
-								? 'competitive tactical shooter, cozy farming, deep crafting…'
-								: isSongs
-									? 'late night drive, soft vocals, no pop…'
-									: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
+					: isRoblox
+						? 'obby with friends, tycoon grind, horror roleplay…'
+						: isBoardGames
+							? 'cozy 2-player engine builder, loud party game…'
+							: isBooks
+								? 'quiet fantasy, bingeable manga, literary thriller…'
+								: isGames
+									? 'competitive tactical shooter, cozy farming, deep crafting…'
+									: isSongs
+										? 'late night drive, soft vocals, no pop…'
+										: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
 				rows="3"
 				disabled={isLoading}
 			></textarea>
@@ -1958,16 +2069,18 @@
 		<div
 			class="cta-row max-lg:sticky max-lg:bottom-[80px] max-lg:z-20 max-lg:border-t max-lg:border-black/10 max-lg:bg-[var(--window,var(--bg,#ffffff))] max-lg:pt-4 max-lg:pb-4"
 		>
-			<button class="cta" type="submit" disabled={isLoading || !canSubmit || boardGamesSoon}>
+			<button class="cta" type="submit" disabled={isLoading || !canSubmit || boardGamesSoon || robloxSoon}>
 				{#if isLoading}
 					<span class="spinner" aria-hidden="true"></span>
 					{uiTheme === 'minimal' ? 'Searching…' : 'searching…'}
-				{:else if boardGamesSoon}
+				{:else if boardGamesSoon || robloxSoon}
 					{uiTheme === 'minimal' ? 'Coming soon' : 'coming soon'}
 				{:else if isSongs}
 					{uiTheme === 'minimal' ? 'Get song picks' : 'get song picks'}
 				{:else if isGames}
 					{uiTheme === 'minimal' ? 'Get game picks' : 'get game picks'}
+				{:else if isRoblox}
+					{uiTheme === 'minimal' ? 'Get Roblox picks' : 'get roblox picks'}
 				{:else if isBoardGames}
 					{uiTheme === 'minimal' ? 'Get board game picks' : 'get board game picks'}
 				{:else}
@@ -1977,7 +2090,7 @@
 			<button
 				type="button"
 				class="cta cta-surprise"
-				disabled={isLoading || boardGamesSoon}
+				disabled={isLoading || boardGamesSoon || robloxSoon}
 				onclick={() => void surpriseMe()}
 			>
 				{uiTheme === 'minimal' ? 'Surprise me' : 'surprise me'}
@@ -2159,6 +2272,7 @@
 				{@const game = isGameRec(item)}
 				{@const book = isBookRec(item)}
 				{@const board = isBoardRec(item)}
+				{@const roblox = isRobloxRec(item)}
 				{@const vibe = isVibeRec(item)}
 				{@const priceBadge = game ? priceBadgeLabel(item) : undefined}
 				{@const saved = itemIsSaved(item)}
@@ -2335,6 +2449,29 @@
 								<p class="meta-line">{item.seasonInfo}</p>
 							{/if}
 
+							{#if hasScoreBreakdown(item)}
+								<div
+									class="score-breakdown"
+									aria-label="Ratings"
+								>
+									{#if item.criticScore != null}
+										<span
+											class="metascore metascore-{criticBand(item.criticScore)}"
+											title="{criticLabel(item)} score"
+										>
+											<span class="metascore-num">{Math.round(item.criticScore)}</span>
+											<span class="metascore-label">{criticLabel(item)}</span>
+										</span>
+									{/if}
+									{#if item.rating != null}
+										<span class="userscore" title="Community / user score">
+											<span class="userscore-num">★ {formatRating(item.rating)}</span>
+											<span class="userscore-label">User</span>
+										</span>
+									{/if}
+								</div>
+							{/if}
+
 							{#if genres.length}
 								<p class="genre-line">{genres.join(' · ')}</p>
 							{/if}
@@ -2348,7 +2485,7 @@
 									preload="none"
 									src={item.preview_url}
 								></audio>
-							{:else if !song && !game && !book && !board && item.trailer_youtube_key}
+							{:else if !song && !game && !book && !board && !roblox && item.trailer_youtube_key}
 								{#if playingPreview === previewKey(item, i)}
 									<div class="trailer-wrap">
 										<iframe
@@ -2377,12 +2514,14 @@
 								{/if}
 							{/if}
 
-							{#if game || board}
+							{#if game || board || roblox}
 								{@const platforms = item.platforms?.filter(Boolean) ?? []}
 								{@const links = gameStoreLinks(item)}
 								<div class="where-watch">
 									<div class="watch-heading">
-										<span class="watch-label">{board ? 'Tabletop' : 'Playable on'}</span>
+										<span class="watch-label"
+											>{roblox ? 'On Roblox' : board ? 'Tabletop' : 'Playable on'}</span
+										>
 									</div>
 									{#if platforms.length}
 										<p class="game-platform-line">{platforms.join(', ')}</p>
@@ -2399,8 +2538,10 @@
 												{storeCtaLabel(link)}
 											</a>
 										{/each}
-										<!-- enforcing 'buy on amazon' everywhere so we don't catch a TOS violation from vague button text -->
-										{@render amazonCta(item)}
+										{#if !roblox}
+											<!-- enforcing 'buy on amazon' everywhere so we don't catch a TOS violation from vague button text -->
+											{@render amazonCta(item)}
+										{/if}
 									</div>
 								</div>
 							{:else}
@@ -2528,6 +2669,12 @@
 			<h2 class="board-soon-title">{BOARD_GAMES_SOON_COPY.title}</h2>
 			<p class="board-soon-body">{BOARD_GAMES_SOON_COPY.body}</p>
 		</article>
+	{:else if robloxSoon}
+		<article class="board-soon-card" transition:fade={{ duration: 220 }}>
+			<p class="board-soon-eyebrow">{ROBLOX_SOON_COPY.eyebrow}</p>
+			<h2 class="board-soon-title">{ROBLOX_SOON_COPY.title}</h2>
+			<p class="board-soon-body">{ROBLOX_SOON_COPY.body}</p>
+		</article>
 	{:else if vibeMissed}
 		<!-- adding a clean zero-result fallback state so the UI never breaks when a query comes back empty -->
 		<article class="vibe-miss-card" transition:fade={{ duration: 220 }}>
@@ -2590,7 +2737,8 @@
 {/snippet}
 
 {#snippet viewTabs()}
-	<div class="view-tabs hidden lg:inline-grid" role="group" aria-label="Results view">
+	<div class="view-tabs hidden lg:inline-flex" role="group" aria-label="App views">
+		<a class="view-tab-btn room-nav-link" href={resolve('/room')}>Group Room</a>
 		<button
 			type="button"
 			class="view-tab-btn"
@@ -2603,19 +2751,15 @@
 		>
 			Match
 		</button>
-		<button
-			type="button"
+		<a
 			class="view-tab-btn"
 			class:active={viewMode === 'list'}
-			aria-pressed={viewMode === 'list'}
-			onclick={() => {
-				viewMode = 'list';
-				mobilePane = 'list';
-			}}
+			href={resolve('/lists')}
+			data-sveltekit-preload-data="hover"
 		>
 			<!-- renaming this to plural since users can sort things into multiple playlists now -->
 			My lists ({totalSavedCount || auraList.length})
-		</button>
+		</a>
 	</div>
 {/snippet}
 
@@ -2660,7 +2804,7 @@
 			class="app-nav-btn"
 			class:active={mobilePane === 'list'}
 			aria-current={mobilePane === 'list' ? 'page' : undefined}
-			onclick={() => setMobilePane('list')}
+			onclick={() => goto(resolve('/lists'))}
 		>
 			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -2676,25 +2820,49 @@
 {/snippet}
 
 {#snippet themeSwitcher()}
-	<div class="theme-segment" role="group" aria-label="Interface theme">
-		<button
-			type="button"
-			class="theme-seg-btn"
-			class:active={uiTheme === 'minimal'}
-			aria-pressed={uiTheme === 'minimal'}
-			onclick={() => setUiTheme('minimal')}
-		>
-			Minimal
-		</button>
-		<button
-			type="button"
-			class="theme-seg-btn"
-			class:active={uiTheme === 'desktop'}
-			aria-pressed={uiTheme === 'desktop'}
-			onclick={() => setUiTheme('desktop')}
-		>
-			Desktop
-		</button>
+	<div class="theme-switcher-stack">
+		<div class="theme-segment" role="group" aria-label="Interface theme">
+			<button
+				type="button"
+				class="theme-seg-btn"
+				class:active={uiTheme === 'minimal'}
+				aria-pressed={uiTheme === 'minimal'}
+				onclick={() => setUiTheme('minimal')}
+			>
+				Minimal
+			</button>
+			<button
+				type="button"
+				class="theme-seg-btn"
+				class:active={uiTheme === 'desktop'}
+				aria-pressed={uiTheme === 'desktop'}
+				onclick={() => setUiTheme('desktop')}
+			>
+				Desktop
+			</button>
+		</div>
+		{#if uiTheme === 'desktop'}
+			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
+				<button
+					type="button"
+					class="theme-seg-btn"
+					class:active={deskMode === 'light'}
+					aria-pressed={deskMode === 'light'}
+					onclick={() => setDeskMode('light')}
+				>
+					Light
+				</button>
+				<button
+					type="button"
+					class="theme-seg-btn"
+					class:active={deskMode === 'dark'}
+					aria-pressed={deskMode === 'dark'}
+					onclick={() => setDeskMode('dark')}
+				>
+					Dark
+				</button>
+			</div>
+		{/if}
 	</div>
 {/snippet}
 
@@ -2731,7 +2899,10 @@
 		</div>
 	</main>
 {:else}
-	<main class="desktop mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+	<main
+		class="desktop mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]"
+		class:desk-dark={deskMode === 'dark'}
+	>
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="menubar flex flex-wrap">
 			<div class="menubar-left">
@@ -2825,6 +2996,7 @@
 		<div
 			class="term-modal mx-auto my-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"
 			class:modal-desktop={uiTheme === 'desktop'}
+			class:modal-desk-dark={uiTheme === 'desktop' && deskMode === 'dark'}
 			class:modal-minimal={uiTheme === 'minimal'}
 			role="dialog"
 			aria-modal="true"
@@ -2933,6 +3105,7 @@
 		<div
 			class="term-modal playlist-picker mx-auto my-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"
 			class:modal-desktop={uiTheme === 'desktop'}
+			class:modal-desk-dark={uiTheme === 'desktop' && deskMode === 'dark'}
 			class:modal-minimal={uiTheme === 'minimal'}
 			role="dialog"
 			aria-modal="true"
@@ -3108,10 +3281,10 @@
 		justify-content: flex-end;
 	}
 
-	/* Shared view tabs + theme segmented control */
+	/* fixing top nav bar button spacing and border collision */
 	.view-tabs {
 		display: none;
-		grid-template-columns: 1fr 1fr;
+		align-items: center;
 		gap: 0;
 		border-radius: 8px;
 		overflow: hidden;
@@ -3122,7 +3295,7 @@
 
 	@media (min-width: 1024px) {
 		.view-tabs {
-			display: inline-grid;
+			display: inline-flex;
 		}
 	}
 
@@ -3244,6 +3417,7 @@
 	.view-tab-btn {
 		appearance: none;
 		border: none;
+		border-right: 1px solid rgba(255, 255, 255, 0.14);
 		cursor: pointer;
 		padding: 0.4rem 0.65rem;
 		font: inherit;
@@ -3253,6 +3427,16 @@
 		color: #9ca3af;
 		background: transparent;
 		white-space: nowrap;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
+		text-decoration: none;
+		line-height: 1.2;
+		min-height: 1.85rem;
+	}
+	.view-tab-btn:last-child {
+		border-right: none;
 	}
 	.view-tab-btn:hover:not(.active) {
 		color: #f3f4f6;
@@ -3267,6 +3451,14 @@
 		outline: 2px solid #8b7cf7;
 		outline-offset: -2px;
 		z-index: 1;
+	}
+
+	.theme-switcher-stack {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		flex-shrink: 0;
 	}
 
 	.theme-segment {
@@ -3318,6 +3510,13 @@
 		--ink: #111111;
 		--muted: #666666;
 		--line: #111111;
+		--hover: #f5f5f5;
+		--soft: #f7f7f7;
+		--chrome: #e8eaed;
+		--rule-soft: #dddddd;
+		--on-accent: #ffffff;
+		--invert: #111111;
+		--panel: #ffffff;
 		display: flex;
 		flex-direction: column;
 		min-height: 100vh;
@@ -3328,6 +3527,24 @@
 		background: var(--desk);
 		color: var(--ink);
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
+	}
+
+	.desktop.desk-dark {
+		--desk: #0b0d11;
+		--window: #080a0e;
+		--bar: #050608;
+		--menu: #0e1015;
+		--accent: #ff4c00;
+		--ink: #e8eaed;
+		--muted: #8b929e;
+		--line: #2a2f38;
+		--hover: #141820;
+		--soft: #0c0f14;
+		--chrome: #12151a;
+		--rule-soft: #22262e;
+		--on-accent: #ffffff;
+		--invert: #e8eaed;
+		--panel: #080a0e;
 	}
 
 	.desktop .view-tabs,
@@ -3341,16 +3558,23 @@
 		padding: 0.15rem 0.55rem;
 		font-size: 0.72rem;
 		color: var(--muted);
+		min-height: 1.55rem;
+	}
+	.desktop .view-tab-btn {
+		border-right: 2px solid var(--line);
+	}
+	.desktop .view-tab-btn:last-child {
+		border-right: none;
 	}
 	.desktop .view-tab-btn:hover:not(.active),
 	.desktop .theme-seg-btn:hover:not(.active) {
 		color: var(--ink);
-		background: #f5f5f5;
+		background: var(--hover);
 	}
 	.desktop .view-tab-btn.active,
 	.desktop .theme-seg-btn.active {
-		color: #fff;
-		background: #111;
+		color: var(--window);
+		background: var(--invert);
 		font-weight: 700;
 	}
 	.desktop .view-tab-btn:focus-visible,
@@ -3513,7 +3737,7 @@
 		flex-shrink: 0;
 		padding: 0.1rem 0.35rem;
 		background: var(--accent);
-		color: #fff;
+		color: var(--on-accent);
 		font-size: 0.62rem;
 		font-weight: 700;
 		letter-spacing: 0.06em;
@@ -3649,7 +3873,7 @@
 		font-variant-numeric: tabular-nums;
 		letter-spacing: 0;
 		text-transform: none;
-		color: #fff;
+		color: var(--on-accent);
 		background: var(--accent);
 		border-radius: 0;
 	}
@@ -3793,10 +4017,10 @@
 	}
 	.desktop .segment-btn:hover:not(:disabled):not(.active) {
 		color: var(--ink);
-		background: #f5f5f5;
+		background: var(--hover);
 	}
 	.desktop .segment-btn.active {
-		color: #fff;
+		color: var(--on-accent);
 		background: var(--accent);
 		font-weight: 700;
 	}
@@ -3833,7 +4057,7 @@
 	.desktop .format-pill.active {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: #fff;
+		color: var(--on-accent);
 	}
 	.desktop .format-pill:disabled {
 		opacity: 0.5;
@@ -3860,7 +4084,7 @@
 	}
 	.desktop .vibe-slot {
 		border: 2px solid var(--line);
-		background: #f7f7f7;
+		background: var(--soft);
 		padding: 0.55rem;
 		display: flex;
 		flex-direction: column;
@@ -3880,7 +4104,7 @@
 		aspect-ratio: 2 / 3;
 		object-fit: cover;
 		border: 2px solid var(--line);
-		background: #ddd;
+		background: var(--rule-soft);
 	}
 	.desktop .vibe-slot-cover-sq {
 		aspect-ratio: 1 / 1;
@@ -4000,11 +4224,17 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: baseline;
-		gap: 0.45rem 0.55rem;
-		margin: 0 0 0.45rem;
+		gap: 0.35rem 0.5rem;
+		margin: 0 0 0.3rem;
 	}
 	.desktop .rec-title-row .rec-title {
 		margin: 0;
+		flex: 1 1 10rem;
+		min-width: 0;
+	}
+	.desktop .rec-title-row .save-btn {
+		margin-left: auto;
+		flex-shrink: 0;
 	}
 	.desktop .age-badge {
 		display: inline-flex;
@@ -4198,7 +4428,7 @@
 		font-size: 0.82rem;
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
-		color: #fff;
+		color: var(--on-accent);
 		background: var(--accent);
 		display: inline-flex;
 		align-items: center;
@@ -4231,7 +4461,7 @@
 		margin-left: auto;
 		border: 2px solid var(--line);
 		background: var(--accent);
-		color: #fff;
+		color: var(--on-accent);
 		cursor: pointer;
 		padding: 0.2rem 0.55rem;
 		font: inherit;
@@ -4346,19 +4576,24 @@
 
 	.desktop .share-vibe-btn {
 		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
 		padding: 0.28rem 0.55rem;
 		font-size: 0.62rem;
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		color: var(--ink);
-		background: var(--panel, #fff);
+		background: var(--panel);
 		border: 1.5px solid var(--line);
 		cursor: pointer;
 	}
 	.desktop .share-vibe-btn:hover:not(:disabled) {
-		border-color: var(--accent, #e85d04);
-		color: var(--accent, #e85d04);
+		border-color: var(--accent);
+		color: var(--accent);
+		background: var(--hover);
 	}
 	.desktop .share-vibe-btn:disabled {
 		opacity: 0.5;
@@ -4411,10 +4646,10 @@
 	.desktop .vibe-miss-card {
 		margin: 0;
 		padding: 1rem 1rem 1.1rem;
-		border: 2px solid #111;
-		border-left: 6px solid #ff4c00;
-		background: #fff;
-		box-shadow: 4px 4px 0 #111;
+		border: 2px solid var(--line);
+		border-left: 6px solid var(--accent);
+		background: var(--window);
+		box-shadow: 4px 4px 0 var(--line);
 	}
 	.desktop .vibe-miss-code {
 		margin: 0 0 0.9rem;
@@ -4422,7 +4657,7 @@
 		font-size: 0.82rem;
 		font-weight: 700;
 		line-height: 1.4;
-		color: #111;
+		color: var(--ink);
 	}
 	.desktop .vibe-miss-actions {
 		display: flex;
@@ -4436,18 +4671,18 @@
 		letter-spacing: 0.03em;
 		padding: 0.55rem 0.8rem;
 		min-height: 44px;
-		border: 2px solid #111;
-		background: #fff;
-		color: #111;
+		border: 2px solid var(--line);
+		background: var(--window);
+		color: var(--ink);
 		cursor: pointer;
 	}
 	.desktop .vibe-miss-btn.primary {
-		background: #ff4c00;
-		color: #fff;
+		background: var(--accent);
+		color: var(--on-accent);
 	}
 	.desktop .vibe-miss-btn:hover {
 		translate: 1px 1px;
-		box-shadow: 2px 2px 0 #111;
+		box-shadow: 2px 2px 0 var(--line);
 	}
 
 	.desktop .loading-block {
@@ -4475,7 +4710,7 @@
 		width: 120px;
 		aspect-ratio: 2 / 3;
 		border: 2px solid var(--line);
-		background: #e8eaed;
+		background: var(--chrome);
 		animation: skel-pulse 1.2s ease-in-out infinite;
 	}
 
@@ -4495,7 +4730,7 @@
 	.desktop .skel-line {
 		height: 0.7rem;
 		width: 88%;
-		background: #e8eaed;
+		background: var(--chrome);
 		animation: skel-pulse 1.2s ease-in-out infinite;
 	}
 
@@ -4623,15 +4858,90 @@
 	}
 
 	.desktop .meta-line {
-		margin: 0 0 0.35rem;
-		font-size: 0.78rem;
+		/* cleaning up the metadata spacing so titles and tags don't feel crowded on mobile screens */
+		margin: 0.1rem 0 0.35rem;
+		font-size: 0.72rem;
+		line-height: 1.45;
+		letter-spacing: 0.01em;
 		color: var(--muted);
+		max-width: 100%;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	.desktop .score-breakdown {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: stretch;
+		gap: 0.45rem 0.55rem;
+		margin: 0.15rem 0 0.4rem;
+	}
+	.desktop .metascore {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.2rem 0.4rem 0.2rem 0.2rem;
+		border: 2px solid var(--line);
+		background: var(--window);
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		line-height: 1;
+	}
+	.desktop .metascore-num {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.7rem;
+		height: 1.7rem;
+		padding: 0 0.2rem;
+		border: 2px solid var(--line);
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--on-accent, #fff);
+		background: var(--ink);
+	}
+	.desktop .metascore-high .metascore-num {
+		background: #2f6b3a;
+		border-color: #2f6b3a;
+	}
+	.desktop .metascore-mid .metascore-num {
+		background: #b07a12;
+		border-color: #b07a12;
+	}
+	.desktop .metascore-low .metascore-num {
+		background: #8b2e2e;
+		border-color: #8b2e2e;
+	}
+	.desktop .metascore-label,
+	.desktop .userscore-label {
+		font-size: 0.58rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.desktop .userscore {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.2rem 0.45rem;
+		border: 2px solid var(--line);
+		background: var(--soft);
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		line-height: 1;
+	}
+	.desktop .userscore-num {
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--ink);
 	}
 
 	.desktop .genre-line {
-		margin: 0 0 0.15rem;
-		font-size: 0.75rem;
-		line-height: 1.45;
+		margin: 0 0 0.1rem;
+		font-size: 0.7rem;
+		line-height: 1.3;
+		letter-spacing: 0.01em;
 		color: var(--muted);
 	}
 
@@ -4786,7 +5096,7 @@
 		padding: 0 0.65rem;
 		background: var(--bar);
 		border-top: 2px solid var(--line);
-		color: #ddd;
+		color: var(--muted);
 		font-size: 0.75rem;
 	}
 
@@ -4802,7 +5112,7 @@
 		justify-content: center;
 		padding: 0.28rem 0.7rem;
 		background: var(--accent);
-		color: #fff;
+		color: var(--on-accent);
 		font-weight: 700;
 		border: 2px solid #c43a00;
 		border-radius: 0;
@@ -5439,11 +5749,17 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: baseline;
-		gap: 0.45rem 0.55rem;
-		margin: 0 0 0.5rem;
+		gap: 0.35rem 0.5rem;
+		margin: 0 0 0.35rem;
 	}
 	.minimal .rec-title-row .rec-title {
 		margin: 0;
+		flex: 1 1 10rem;
+		min-width: 0;
+	}
+	.minimal .rec-title-row .save-btn {
+		margin-left: auto;
+		flex-shrink: 0;
 	}
 	.minimal .age-badge {
 		display: inline-flex;
@@ -5964,15 +6280,88 @@
 	}
 
 	.minimal .meta-line {
-		margin: 0 0 0.35rem;
-		font-size: 0.85rem;
+		margin: 0.1rem 0 0.35rem;
+		font-size: 0.78rem;
+		line-height: 1.45;
+		letter-spacing: 0.01em;
 		color: var(--muted);
+		max-width: 100%;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	.minimal .score-breakdown {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: stretch;
+		gap: 0.45rem 0.55rem;
+		margin: 0.2rem 0 0.45rem;
+	}
+	.minimal .metascore {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.22rem 0.45rem 0.22rem 0.22rem;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.04);
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		line-height: 1;
+	}
+	.minimal .metascore-num {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.75rem;
+		height: 1.75rem;
+		padding: 0 0.2rem;
+		border-radius: 4px;
+		font-size: 0.8rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: #fff;
+		background: #3a3a42;
+	}
+	.minimal .metascore-high .metascore-num {
+		background: #3d8b52;
+	}
+	.minimal .metascore-mid .metascore-num {
+		background: #c4921a;
+	}
+	.minimal .metascore-low .metascore-num {
+		background: #b04444;
+	}
+	.minimal .metascore-label,
+	.minimal .userscore-label {
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.minimal .userscore {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.22rem 0.5rem;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.04);
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
+		line-height: 1;
+	}
+	.minimal .userscore-num {
+		font-size: 0.8rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--ink);
 	}
 
 	.minimal .genre-line {
-		margin: 0 0 0.15rem;
-		font-size: 0.8rem;
-		line-height: 1.45;
+		margin: 0 0 0.1rem;
+		font-size: 0.72rem;
+		line-height: 1.3;
+		letter-spacing: 0.01em;
 		color: var(--muted);
 	}
 
@@ -6700,6 +7089,77 @@
 		width: 100%;
 	}
 	.term-modal.modal-desktop .auth-link:hover {
+		color: #ff4c00;
+	}
+	/* Desktop Dark — must come after light modal rules so overrides stick */
+	.term-modal.modal-desktop.modal-desk-dark {
+		background: #080a0e;
+		border-color: #2a2f38;
+		color: #e8eaed;
+		box-shadow: 4px 4px 0 #2a2f38;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-titlebar {
+		background: #050608;
+		color: #e8eaed;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-modal-body {
+		background: #080a0e;
+	}
+	.term-modal.modal-desktop.modal-desk-dark h2 {
+		color: #e8eaed;
+	}
+	.term-modal.modal-desktop.modal-desk-dark p {
+		color: #8b929e;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn {
+		border-color: #2a2f38;
+		background: #0c0f14;
+		color: #e8eaed;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn:hover:not(:disabled) {
+		border-color: #ff4c00;
+		color: #ff4c00;
+		background: #141820;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn.primary {
+		background: #e8eaed;
+		border-color: #e8eaed;
+		color: #080a0e;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn.primary:hover:not(:disabled) {
+		background: #ff4c00;
+		border-color: #ff4c00;
+		color: #fff;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn.discord {
+		background: #5865f2;
+		border-color: #5865f2;
+		color: #fff;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .term-btn.discord:hover:not(:disabled) {
+		background: #4752c4;
+		border-color: #4752c4;
+		color: #fff;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .login-cred-form input,
+	.term-modal.modal-desktop.modal-desk-dark .playlist-input {
+		border-color: #2a2f38;
+		background: #0c0f14;
+		color: #e8eaed;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .login-cred-form input::placeholder,
+	.term-modal.modal-desktop.modal-desk-dark .playlist-input::placeholder {
+		color: #8b929e;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .login-cred-form input:focus,
+	.term-modal.modal-desktop.modal-desk-dark .playlist-input:focus {
+		border-color: #ff4c00;
+		box-shadow: 2px 2px 0 #ff4c00;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .auth-link {
+		color: #8b929e;
+	}
+	.term-modal.modal-desktop.modal-desk-dark .auth-link:hover {
 		color: #ff4c00;
 	}
 	.term-modal.modal-minimal .auth-link {

@@ -8,12 +8,13 @@
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import RecommendForm from '$lib/components/RecommendForm.svelte';
 	import { SITE } from '$lib/seo';
-	import { ui, setUiTheme, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import '$lib/styles/app-chrome.css';
 
 	let { data } = $props();
 
 	let uiTheme = $derived(ui.theme);
+	let deskMode = $derived(ui.deskMode);
 	let session = $derived(page.data.session);
 
 	const homeHref = resolve('/');
@@ -107,30 +108,54 @@
 
 {#snippet themeSwitcher()}
 	<!-- wiring up the theme toggle so visitors can switch between retro and minimal modes -->
-	<div class="theme-segment" role="group" aria-label="Interface theme">
-		<button
-			type="button"
-			class="theme-seg-btn"
-			class:active={uiTheme === 'minimal'}
-			aria-pressed={uiTheme === 'minimal'}
-			onclick={() => setUiTheme('minimal')}
-		>
-			Minimal
-		</button>
-		<button
-			type="button"
-			class="theme-seg-btn"
-			class:active={uiTheme === 'desktop'}
-			aria-pressed={uiTheme === 'desktop'}
-			onclick={() => setUiTheme('desktop')}
-		>
-			Desktop
-		</button>
+	<div class="theme-switcher-stack">
+		<div class="theme-segment" role="group" aria-label="Interface theme">
+			<button
+				type="button"
+				class="theme-seg-btn"
+				class:active={uiTheme === 'minimal'}
+				aria-pressed={uiTheme === 'minimal'}
+				onclick={() => setUiTheme('minimal')}
+			>
+				Minimal
+			</button>
+			<button
+				type="button"
+				class="theme-seg-btn"
+				class:active={uiTheme === 'desktop'}
+				aria-pressed={uiTheme === 'desktop'}
+				onclick={() => setUiTheme('desktop')}
+			>
+				Desktop
+			</button>
+		</div>
+		{#if uiTheme === 'desktop'}
+			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
+				<button
+					type="button"
+					class="theme-seg-btn"
+					class:active={deskMode === 'light'}
+					aria-pressed={deskMode === 'light'}
+					onclick={() => setDeskMode('light')}
+				>
+					Light
+				</button>
+				<button
+					type="button"
+					class="theme-seg-btn"
+					class:active={deskMode === 'dark'}
+					aria-pressed={deskMode === 'dark'}
+					onclick={() => setDeskMode('dark')}
+				>
+					Dark
+				</button>
+			</div>
+		{/if}
 	</div>
 {/snippet}
 
 {#snippet viewTabs()}
-	<div class="view-tabs hidden lg:inline-grid" role="group" aria-label="Results view">
+	<div class="view-tabs hidden lg:inline-flex" role="group" aria-label="Results view">
 		<a
 			class="view-tab-btn"
 			href={homeHref}
@@ -278,7 +303,10 @@
 		</div>
 	</main>
 {:else}
-	<main class="desktop mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+	<main
+		class="desktop mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]"
+		class:desk-dark={deskMode === 'dark'}
+	>
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="menubar flex flex-wrap">
 			<div class="menubar-left">

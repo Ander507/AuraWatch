@@ -8,6 +8,7 @@ import {
 	type SelectedTypes
 } from '$lib/server/catalog';
 import { parseSearchQuery, resolveTmdbArtwork, tmdbImageUrl } from '$lib/server/tmdbSearch';
+import { tmdbCriticPercent } from '$lib/server/tmdbCriticScore';
 import { cachedJsonFetch } from '$lib/server/httpCache';
 
 /** TMDB genre ids we care about for filtering */
@@ -150,6 +151,7 @@ export type SimilarPick = {
 	fallbackUrls?: string[];
 	year: string | null;
 	rating: number | null;
+	criticScore: number | null;
 	overview: string;
 	genres: string[];
 	referenceTitle: string;
@@ -615,6 +617,7 @@ export async function findSimilarPicks(opts: {
 				fallbackUrls,
 				year: h.date ? h.date.slice(0, 4) : null,
 				rating: h.vote_average || null,
+				criticScore: tmdbCriticPercent(h.vote_average),
 				overview: h.overview,
 				genres: genreNamesFromIds(h.genre_ids),
 				referenceTitle: refNames.join(', '),

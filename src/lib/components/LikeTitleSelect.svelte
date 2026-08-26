@@ -4,10 +4,20 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+	import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 
 	export type LikeHit = {
 		id: number | string;
-		mediaType: 'movie' | 'tv' | 'song' | 'artist' | 'game' | 'book' | 'manga' | 'boardgame';
+		mediaType:
+			| 'movie'
+			| 'tv'
+			| 'song'
+			| 'artist'
+			| 'game'
+			| 'book'
+			| 'manga'
+			| 'boardgame'
+			| 'roblox';
 		title: string;
 		subtitle?: string | null;
 		posterUrl: string | null;
@@ -15,7 +25,16 @@
 		poster_path?: string | null;
 		year: string | null;
 		rating: number | null;
-		kindLabel: 'MOVIE' | 'TV' | 'SONG' | 'ARTIST' | 'GAME' | 'BOOK' | 'MANGA' | 'BOARD';
+		kindLabel:
+			| 'MOVIE'
+			| 'TV'
+			| 'SONG'
+			| 'ARTIST'
+			| 'GAME'
+			| 'BOOK'
+			| 'MANGA'
+			| 'BOARD'
+			| 'ROBLOX';
 	};
 
 	let {
@@ -32,7 +51,7 @@
 		id?: string;
 		variant?: 'dark' | 'desktop';
 		max?: number;
-		kind?: 'media' | 'music' | 'games' | 'books' | 'boardgames';
+		kind?: 'media' | 'music' | 'games' | 'books' | 'boardgames' | 'roblox';
 		language?: string;
 	} = $props();
 
@@ -52,6 +71,8 @@
 
 	// bgg api is still pending approval, throwing up a coming soon banner so it doesn't break the ui
 	let boardSoon = $derived(kind === 'boardgames' && BOARD_GAMES_COMING_SOON);
+	let robloxSoon = $derived(kind === 'roblox' && ROBLOX_COMING_SOON);
+	let laneSoon = $derived(boardSoon || robloxSoon);
 
 	const SEARCH_CACHE_PREFIX = 'aurawatch_search_v2:';
 	const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -159,7 +180,9 @@
 								? 'books'
 								: kind === 'boardgames'
 									? 'boardgames'
-									: 'media'
+									: kind === 'roblox'
+										? 'roblox'
+										: 'media'
 				}&language=${encodeURIComponent(language)}`,
 				{ signal: ctrl.signal }
 			);
@@ -301,12 +324,18 @@
 <svelte:window onclick={onWindowClick} />
 
 <div class={['like-select', variant]} bind:this={rootEl}>
-	{#if boardSoon}
-		<!-- placeholder state for board games until the token goes live -->
+	{#if laneSoon}
+		<!-- placeholder state until a catalog lane clears review -->
 		<div class="soon-banner" role="status">
-			<p class="soon-eyebrow">{BOARD_GAMES_SOON_COPY.eyebrow}</p>
-			<p class="soon-title">{BOARD_GAMES_SOON_COPY.title}</p>
-			<p class="soon-body">{BOARD_GAMES_SOON_COPY.body}</p>
+			{#if boardSoon}
+				<p class="soon-eyebrow">{BOARD_GAMES_SOON_COPY.eyebrow}</p>
+				<p class="soon-title">{BOARD_GAMES_SOON_COPY.title}</p>
+				<p class="soon-body">{BOARD_GAMES_SOON_COPY.body}</p>
+			{:else}
+				<p class="soon-eyebrow">{ROBLOX_SOON_COPY.eyebrow}</p>
+				<p class="soon-title">{ROBLOX_SOON_COPY.title}</p>
+				<p class="soon-body">{ROBLOX_SOON_COPY.body}</p>
+			{/if}
 		</div>
 	{:else}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -367,7 +396,9 @@
 								? 'Search a game…'
 								: kind === 'boardgames'
 									? 'Search a board game…'
-									: 'Search a title…'}
+									: kind === 'roblox'
+										? 'Search a Roblox experience…'
+										: 'Search a title…'}
 					{disabled}
 					autocomplete="off"
 					autocapitalize="off"
@@ -828,5 +859,47 @@
 	.like-select.desktop .poster {
 		border-radius: 0;
 		background: #eee;
+	}
+
+	:global(.desk-dark) .like-select.desktop .field-shell,
+	:global(.desk-dark) .like-select.desktop .panel {
+		border-color: #2a2f38;
+		background: #080a0e;
+	}
+	:global(.desk-dark) .like-select.desktop .chip {
+		border-color: #2a2f38;
+		background: #141820;
+		color: #e8eaed;
+	}
+	:global(.desk-dark) .like-select.desktop .chip-x {
+		color: #8b929e;
+	}
+	:global(.desk-dark) .like-select.desktop .chip-x:hover:not(:disabled) {
+		color: #e8eaed;
+		background: rgba(255, 255, 255, 0.08);
+	}
+	:global(.desk-dark) .like-select.desktop .search-input {
+		color: #e8eaed;
+	}
+	:global(.desk-dark) .like-select.desktop .search-input::placeholder,
+	:global(.desk-dark) .like-select.desktop .max-hint,
+	:global(.desk-dark) .like-select.desktop .sub,
+	:global(.desk-dark) .like-select.desktop .panel-status,
+	:global(.desk-dark) .like-select.desktop .panel-foot {
+		color: #8b929e;
+	}
+	:global(.desk-dark) .like-select.desktop .row {
+		border-bottom-color: #22262e;
+		color: #e8eaed;
+	}
+	:global(.desk-dark) .like-select.desktop .panel-status,
+	:global(.desk-dark) .like-select.desktop .panel-foot {
+		border-color: #22262e;
+	}
+	:global(.desk-dark) .like-select.desktop .panel-miss .panel-status {
+		color: #e8eaed;
+	}
+	:global(.desk-dark) .like-select.desktop .poster {
+		background: #141820;
 	}
 </style>

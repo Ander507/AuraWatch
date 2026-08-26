@@ -8,13 +8,14 @@ export type MediaFormat =
 	| 'games'
 	| 'books'
 	| 'boardgames'
+	| 'roblox'
 	| 'fullvibe';
 export type SelectedType = 'all' | MediaFormat;
 /** Empty array = all media formats (movie / series / anime). Exclusive lanes never live in the catalog. */
 export type SelectedTypes = MediaFormat[];
 export type CatalogKind = 'anime_series' | 'anime_movie' | 'movie' | 'series';
 
-const EXCLUSIVE: MediaFormat[] = ['songs', 'games', 'books', 'boardgames', 'fullvibe'];
+const EXCLUSIVE: MediaFormat[] = ['songs', 'games', 'books', 'boardgames', 'roblox', 'fullvibe'];
 
 export function isExclusiveFormat(t: MediaFormat | string): boolean {
 	return EXCLUSIVE.includes(t as MediaFormat);

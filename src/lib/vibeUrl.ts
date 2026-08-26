@@ -27,6 +27,7 @@ const FORMAT_IDS = new Set([
 	'games',
 	'books',
 	'boardgames',
+	'roblox',
 	'fullvibe'
 ]);
 
@@ -74,6 +75,7 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		.map((t) =>
 			t === 'board' || t === 'boardgame' || t === 'tabletop' ? 'boardgames' : t
 		)
+		.map((t) => (t === 'rbx' || t === 'roblox-games' || t === 'robloxgames' ? 'roblox' : t))
 		.map((t) => (t === 'vibe' || t === 'itinerary' || t === 'combo' ? 'fullvibe' : t))
 		.filter((t) => FORMAT_IDS.has(t));
 

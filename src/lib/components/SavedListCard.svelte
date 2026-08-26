@@ -103,6 +103,12 @@
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
 	}
 
+	:global(.desk-dark) .aura-list-card.desktop {
+		border-color: #2a2f38;
+		background: #080a0e;
+		color: #e8eaed;
+	}
+
 	.aura-list-card.minimal {
 		padding: 0.35rem 0;
 		border-bottom: 1px solid rgba(255, 255, 255, 0.12);
@@ -122,6 +128,11 @@
 	.desktop .aura-list-cover {
 		border: 2px solid #111;
 		background: #eee;
+	}
+
+	:global(.desk-dark) .desktop .aura-list-cover {
+		border-color: #2a2f38;
+		background: #141820;
 	}
 
 	.minimal .aura-list-cover {
@@ -157,6 +168,10 @@
 
 	.desktop .cover-fallback-initials {
 		color: #111;
+	}
+
+	:global(.desk-dark) .desktop .cover-fallback-initials {
+		color: #e8eaed;
 	}
 
 	.minimal .cover-fallback-initials {
@@ -229,6 +244,11 @@
 		background: #fff;
 	}
 
+	:global(.desk-dark) .desktop .provider-btn {
+		border-color: #2a2f38;
+		background: #0c0f14;
+	}
+
 	.desktop a.provider-btn:hover {
 		border-color: #ff4c00;
 	}
@@ -292,6 +312,11 @@
 	.desktop .aura-list-remove {
 		border: 2px solid #111;
 		color: #666;
+	}
+
+	:global(.desk-dark) .desktop .aura-list-remove {
+		border-color: #2a2f38;
+		color: #8b929e;
 	}
 
 	.desktop .aura-list-remove:hover {

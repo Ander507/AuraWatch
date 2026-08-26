@@ -12,6 +12,7 @@
 	let mode = $derived(modePick ?? form?.mode ?? 'login');
 	let pending = $state(false);
 	let uiTheme = $derived(ui.theme);
+	let deskMode = $derived(ui.deskMode);
 	let clientError = $state('');
 
 	let formError = $derived(clientError || form?.error || data.error || '');
@@ -53,6 +54,7 @@
 <div
 	class="auth-shell"
 	class:desktop={uiTheme === 'desktop'}
+	class:desk-dark={uiTheme === 'desktop' && deskMode === 'dark'}
 	class:minimal={uiTheme === 'minimal'}
 >
 	<section class="auth-card">
@@ -145,6 +147,10 @@
 		background: #7b8a9d;
 		color: #111;
 	}
+	.auth-shell.desktop.desk-dark {
+		background: #0b0d11;
+		color: #e8eaed;
+	}
 	.auth-shell.minimal {
 		background: #0e0e12;
 		color: #f3f4f6;
@@ -157,6 +163,12 @@
 		background: #fff;
 		border: 2px solid #111;
 		box-shadow: 4px 4px 0 #111;
+	}
+	.auth-shell.desktop.desk-dark .auth-card {
+		background: #080a0e;
+		border-color: #2a2f38;
+		box-shadow: 4px 4px 0 #2a2f38;
+		color: #e8eaed;
 	}
 	.auth-shell.minimal .auth-card {
 		background: #16161c;
@@ -171,6 +183,11 @@
 		background: #e8eaed;
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
 		font-size: 0.72rem;
+	}
+	.auth-shell.desktop.desk-dark .titlebar {
+		border-bottom-color: #2a2f38;
+		background: #0e1015;
+		color: #e8eaed;
 	}
 	.traffic {
 		display: flex;

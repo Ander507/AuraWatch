@@ -15,7 +15,10 @@ export type BggHit = {
 	minPlayers: number | null;
 	maxPlayers: number | null;
 	playingTime: number | null;
+	/** Community average (1–10) */
 	rating: number | null;
+	/** Geek Rating mapped to 0–100 for critic-style badge */
+	criticScore: number | null;
 	description: string | null;
 	poster_path: string | null;
 	image: string | null;
@@ -370,11 +373,23 @@ async function fetchThing(id: number): Promise<{
 	maxPlayers: number | null;
 	playingTime: number | null;
 	rating: number | null;
+	criticScore: number | null;
 	description: string | null;
 } | null> {
 	const thingUrl = `https://boardgamegeek.com/xmlapi2/thing?id=${id}&stats=1`;
 	const xml = await cachedXml(thingUrl);
 	if (!xml) return null;
+
+	const parseScores = (averageRaw: string | null, bayesRaw: string | null) => {
+		const avg = averageRaw && Number.isFinite(Number(averageRaw)) ? Number(averageRaw) : null;
+		const bayes = bayesRaw && Number.isFinite(Number(bayesRaw)) ? Number(bayesRaw) : null;
+		const criticScore =
+			bayes != null ? Math.max(1, Math.min(100, Math.round(bayes * 10))) : null;
+		return {
+			rating: avg != null ? Math.round(avg * 10) / 10 : null,
+			criticScore
+		};
+	};
 
 	try {
 		const parsed = bggXmlParser.parse(xml) as Record<string, unknown>;
@@ -392,7 +407,10 @@ async function fetchThing(id: number): Promise<{
 			const playingTime = Number(xmlAttr(item.playingtime, 'value'));
 			const stats = item.statistics as Record<string, unknown> | undefined;
 			const ratings = stats?.ratings as Record<string, unknown> | undefined;
-			const avg = xmlAttr(ratings?.average, 'value');
+			const scores = parseScores(
+				xmlAttr(ratings?.average, 'value'),
+				xmlAttr(ratings?.bayesaverage, 'value')
+			);
 			const descRaw = xmlText(item.description);
 
 			return {
@@ -402,7 +420,8 @@ async function fetchThing(id: number): Promise<{
 				minPlayers: Number.isFinite(minPlayers) ? minPlayers : null,
 				maxPlayers: Number.isFinite(maxPlayers) ? maxPlayers : null,
 				playingTime: Number.isFinite(playingTime) ? playingTime : null,
-				rating: avg && Number.isFinite(Number(avg)) ? Number(avg) : null,
+				rating: scores.rating,
+				criticScore: scores.criticScore,
 				description: descRaw ? decodeXml(descRaw).slice(0, 800) : null
 			};
 		}
@@ -420,6 +439,8 @@ async function fetchThing(id: number): Promise<{
 	const maxPlayers = Number(attrOf(firstSelfOrOpen(chunk, 'maxplayers') || '', 'value'));
 	const playingTime = Number(attrOf(firstSelfOrOpen(chunk, 'playingtime') || '', 'value'));
 	const avg = attrOf(chunk.match(/<average\b[^>]*\/?>/i)?.[0] || '', 'value');
+	const bayes = attrOf(chunk.match(/<bayesaverage\b[^>]*\/?>/i)?.[0] || '', 'value');
+	const scores = parseScores(avg, bayes);
 	const descRaw = chunk.match(/<description>([\s\S]*?)<\/description>/i)?.[1];
 
 	return {
@@ -429,7 +450,8 @@ async function fetchThing(id: number): Promise<{
 		minPlayers: Number.isFinite(minPlayers) ? minPlayers : null,
 		maxPlayers: Number.isFinite(maxPlayers) ? maxPlayers : null,
 		playingTime: Number.isFinite(playingTime) ? playingTime : null,
-		rating: avg && Number.isFinite(Number(avg)) ? Number(avg) : null,
+		rating: scores.rating,
+		criticScore: scores.criticScore,
 		description: descRaw ? decodeXml(descRaw).slice(0, 800) : null
 	};
 }
@@ -548,6 +570,7 @@ export async function lookupBggGame(opts: {
 		const year = thing?.year || best.year;
 		const description = thing?.description ?? null;
 		const rating = thing?.rating ?? null;
+		const criticScore = thing?.criticScore ?? null;
 
 		// normalizing the data to look exactly like a movie or video game result
 		return {
@@ -560,6 +583,7 @@ export async function lookupBggGame(opts: {
 			maxPlayers: thing?.maxPlayers ?? null,
 			playingTime: thing?.playingTime ?? null,
 			rating,
+			criticScore,
 			description,
 			poster_path: coverUrl,
 			image: coverUrl,

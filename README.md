@@ -29,7 +29,8 @@ Open the demo link above. That’s it.
 - **Board games** — live against BoardGameGeek’s XML API. Search → batch `/thing` for box art, year, and player count. Exact titles win over fan expansions. **Buy on Amazon** here too.
 - **Where to watch / listen** — region-aware streaming logos for movies and shows; listen links for songs.
 - **Playlists** — Discord sign-in, save picks to cloud lists, share a `/list/…` URL, export movies/shows to Letterboxd. Copy Link pops a little terminal toast so you know it actually copied.
-- **Two themes** — dark minimal or light desktop board, remembered in the browser.
+- **Group Vibe Rooms** — host signs in, shares a `/room/…` link. Guests join with a nickname (no account). The host calculates a match from everyone’s notes and likes; picks save on the room so the group sees the same cards, including where to watch / play. Rooms self-destruct after 24 hours.
+- **Two themes** — dark Minimal, or Desktop board in Light or Dark. Remembered in the browser.
 
 AuraWatch is free. **Buy on Amazon** links are affiliate links. As an Amazon Associate, we earn from qualifying purchases.
 
@@ -85,6 +86,8 @@ Recommendations don’t all go through one path. The backend picks the least-fak
 5. **“Like this title”** → TMDB similar / recommendations, filtered by your genres
 6. **Vibe / genres** → Gemini concierge (strict JSON) → TMDB for posters + providers
 7. **Anything fails** → score a local catalog by format, genres, and vibe keywords
+
+**Group Vibe Rooms** skip the solo form. The host sets format + filters (region, rating, decade, platforms). Guests drop notes and liked titles. Calculate (host only) merges everyone into one recommend call and stores the full cards on the room so watch/play links stay in sync.
 
 Gemini is good at *taste* and bad at *valid JSON*, so there’s a repair pass for fences, curly quotes, and trailing commas. Keys rotate with a short cooldown when one burns out. Result genres are the title’s real tags — never a parrot of whatever you clicked in the UI.
 

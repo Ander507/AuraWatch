@@ -34,7 +34,8 @@ export function seoJsonLd() {
 					'Video game recommendations',
 					'Vibe and genre matching',
 					'Similar-to title search',
-					'Where to watch links'
+					'Where to watch links',
+					'Group Vibe Rooms'
 				]
 			},
 			{

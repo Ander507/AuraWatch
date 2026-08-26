@@ -15,10 +15,10 @@
 		justify-content: flex-end;
 	}
 
-	/* Shared view tabs + theme segmented control */
+	/* fixing top nav bar button spacing and border collision */
 	.view-tabs {
 		display: none;
-		grid-template-columns: 1fr 1fr;
+		align-items: center;
 		gap: 0;
 		border-radius: 8px;
 		overflow: hidden;
@@ -29,7 +29,7 @@
 
 	@media (min-width: 1024px) {
 		.view-tabs {
-			display: inline-grid;
+			display: inline-flex;
 		}
 	}
 
@@ -172,6 +172,7 @@
 	.view-tab-btn {
 		appearance: none;
 		border: none;
+		border-right: 1px solid rgba(255, 255, 255, 0.14);
 		cursor: pointer;
 		padding: 0.4rem 0.65rem;
 		font: inherit;
@@ -181,6 +182,16 @@
 		color: #9ca3af;
 		background: transparent;
 		white-space: nowrap;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
+		text-decoration: none;
+		line-height: 1.2;
+		min-height: 1.85rem;
+	}
+	.view-tab-btn:last-child {
+		border-right: none;
 	}
 	.view-tab-btn:hover:not(.active) {
 		color: #f3f4f6;
@@ -195,6 +206,14 @@
 		outline: 2px solid #8b7cf7;
 		outline-offset: -2px;
 		z-index: 1;
+	}
+
+	.theme-switcher-stack {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		flex-shrink: 0;
 	}
 
 	.theme-segment {
@@ -247,6 +266,13 @@
 		--ink: #111111;
 		--muted: #666666;
 		--line: #111111;
+		--hover: #f5f5f5;
+		--soft: #f7f7f7;
+		--chrome: #e8eaed;
+		--rule-soft: #dddddd;
+		--on-accent: #ffffff;
+		--invert: #111111;
+		--panel: #ffffff;
 		display: flex;
 		flex-direction: column;
 		min-height: 100vh;
@@ -257,6 +283,24 @@
 		background: var(--desk);
 		color: var(--ink);
 		font-family: 'JetBrains Mono', ui-monospace, monospace;
+	}
+
+	> .desktop.desk-dark {
+		--desk: #0b0d11;
+		--window: #080a0e;
+		--bar: #050608;
+		--menu: #0e1015;
+		--accent: #ff4c00;
+		--ink: #e8eaed;
+		--muted: #8b929e;
+		--line: #2a2f38;
+		--hover: #141820;
+		--soft: #0c0f14;
+		--chrome: #12151a;
+		--rule-soft: #22262e;
+		--on-accent: #ffffff;
+		--invert: #e8eaed;
+		--panel: #080a0e;
 	}
 
 	.desktop .view-tabs,
@@ -270,16 +314,23 @@
 		padding: 0.15rem 0.55rem;
 		font-size: 0.72rem;
 		color: var(--muted);
+		min-height: 1.55rem;
+	}
+	.desktop .view-tab-btn {
+		border-right: 2px solid var(--line);
+	}
+	.desktop .view-tab-btn:last-child {
+		border-right: none;
 	}
 	.desktop .view-tab-btn:hover:not(.active),
 	.desktop .theme-seg-btn:hover:not(.active) {
 		color: var(--ink);
-		background: #f5f5f5;
+		background: var(--hover);
 	}
 	.desktop .view-tab-btn.active,
 	.desktop .theme-seg-btn.active {
-		color: #fff;
-		background: #111;
+		color: var(--window);
+		background: var(--invert);
 		font-weight: 700;
 	}
 	.desktop .view-tab-btn:focus-visible,
@@ -1112,19 +1163,24 @@
 
 	.desktop .share-vibe-btn {
 		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
 		padding: 0.28rem 0.55rem;
 		font-size: 0.62rem;
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		color: var(--ink);
-		background: var(--panel, #fff);
+		background: var(--panel);
 		border: 1.5px solid var(--line);
 		cursor: pointer;
 	}
 	.desktop .share-vibe-btn:hover:not(:disabled) {
-		border-color: var(--accent, #e85d04);
-		color: var(--accent, #e85d04);
+		border-color: var(--accent);
+		color: var(--accent);
+		background: var(--hover);
 	}
 	.desktop .share-vibe-btn:disabled {
 		opacity: 0.5;
@@ -1932,6 +1988,7 @@
 .desktop .auth-btn { border: 2px solid #111; background: #fff; color: #111; border-radius: 0; }
 .desktop .auth-name { color: #666; }
 a.view-tab-btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+span.view-tab-btn { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
 a.menu-brand { text-decoration: none; }
 a.menu-brand:hover { color: var(--accent); }
 }

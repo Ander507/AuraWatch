@@ -15,6 +15,7 @@
 	import { buildVibeSearchParams } from '$lib/vibeUrl';
 	import { rollSurpriseMe } from '$lib/surpriseMe';
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
+	import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 	import type { UiTheme } from '$lib/uiTheme.svelte';
 
 	let { theme, startAdvanced = false }: { theme: UiTheme; startAdvanced?: boolean } = $props();
@@ -31,7 +32,8 @@
 		{ id: 'songs' as const, label: 'Songs' },
 		{ id: 'games' as const, label: 'Games' },
 		{ id: 'books' as const, label: 'Books & Manga' },
-		{ id: 'boardgames' as const, label: 'Board Games' }
+		{ id: 'boardgames' as const, label: 'Board Games' },
+		{ id: 'roblox' as const, label: 'Roblox' }
 	];
 
 	const DECADE_OPTIONS = [
@@ -208,6 +210,24 @@
 			'Campaign',
 			'Light',
 			'Heavy'
+		],
+		roblox: [
+			'Obby',
+			'Parkour',
+			'Roleplay',
+			'Tycoon',
+			'Simulator',
+			'Horror',
+			'Survival',
+			'PvP',
+			'Fighting',
+			'Story',
+			'Adventure',
+			'Pet',
+			'Racing',
+			'Social',
+			'Fashion',
+			'Tower Defense'
 		]
 	};
 
@@ -234,8 +254,12 @@
 	let isBooks = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'books');
 	let isBoardGames = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'boardgames');
 	let boardGamesSoon = $derived(isBoardGames && BOARD_GAMES_COMING_SOON);
+	let isRoblox = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'roblox');
+	let robloxSoon = $derived(isRoblox && ROBLOX_COMING_SOON);
 	let isFullVibe = $derived(selectedTypes.length === 1 && selectedTypes[0] === 'fullvibe');
-	let isExclusiveLane = $derived(isSongs || isGames || isBooks || isBoardGames || isFullVibe);
+	let isExclusiveLane = $derived(
+		isSongs || isGames || isBooks || isBoardGames || isRoblox || isFullVibe
+	);
 	let isMediaLane = $derived(!isExclusiveLane);
 	let showSeriesLength = $derived(selectedTypes.includes('series') && !isExclusiveLane);
 
@@ -244,6 +268,7 @@
 		if (isGames) return GENRES_BY_FORMAT.games;
 		if (isBooks) return GENRES_BY_FORMAT.books;
 		if (isBoardGames) return GENRES_BY_FORMAT.boardgames;
+		if (isRoblox) return GENRES_BY_FORMAT.roblox;
 		if (isFullVibe) return ALL_MEDIA_GENRES;
 		if (!selectedTypes.length) return ALL_MEDIA_GENRES;
 		const set = new Set<string>();
@@ -324,7 +349,7 @@
 	}
 
 	function toggleFormat(id: FormatId) {
-		const exclusiveIds: FormatId[] = ['songs', 'games', 'books', 'boardgames'];
+		const exclusiveIds: FormatId[] = ['songs', 'games', 'books', 'boardgames', 'roblox'];
 		const wasExclusive =
 			exclusiveIds.includes(selectedTypes[0] as FormatId) && selectedTypes.length === 1;
 		let next: FormatId[];
@@ -413,6 +438,10 @@
 			errMsg = BOARD_GAMES_SOON_COPY.body;
 			return;
 		}
+		if (robloxSoon) {
+			errMsg = ROBLOX_SOON_COPY.body;
+			return;
+		}
 		isLoading = true;
 		try {
 			await goFindPicks();
@@ -431,6 +460,10 @@
 	async function surpriseMe() {
 		if (boardGamesSoon) {
 			errMsg = BOARD_GAMES_SOON_COPY.body;
+			return;
+		}
+		if (robloxSoon) {
+			errMsg = ROBLOX_SOON_COPY.body;
 			return;
 		}
 		const roll = rollSurpriseMe(selectedTypes);
@@ -481,6 +514,8 @@
 			<p class="field-hint">Wildcard mode — movie/show + music + snack for one vibe</p>
 		{:else if boardGamesSoon}
 			<p class="field-hint">{BOARD_GAMES_SOON_COPY.eyebrow} — picks stay parked until review clears</p>
+		{:else if robloxSoon}
+			<p class="field-hint">{ROBLOX_SOON_COPY.eyebrow} — picks stay parked until catalog is stable</p>
 		{/if}
 	</div>
 
@@ -517,13 +552,15 @@
 			<label class="field-label" for="like-title">
 				{isGames
 					? 'Like these games'
-					: isBoardGames
-						? 'Like these board games'
-						: isBooks
-							? 'Like these books'
-							: isSongs
-								? 'Like these'
-								: 'Like these titles'}
+					: isRoblox
+						? 'Like these Roblox experiences'
+						: isBoardGames
+							? 'Like these board games'
+							: isBooks
+								? 'Like these books'
+								: isSongs
+									? 'Like these'
+									: 'Like these titles'}
 				<span class="optional">(optional)</span>
 			</label>
 			<LikeTitleSelect
@@ -533,25 +570,29 @@
 				variant={theme === 'desktop' ? 'desktop' : 'dark'}
 				kind={isGames
 					? 'games'
-					: isBoardGames
-						? 'boardgames'
-						: isBooks
-							? 'books'
-							: isSongs
-								? 'music'
-								: 'media'}
+					: isRoblox
+						? 'roblox'
+						: isBoardGames
+							? 'boardgames'
+							: isBooks
+								? 'books'
+								: isSongs
+									? 'music'
+									: 'media'}
 				language={selectedLanguage}
 			/>
 			<p class="field-hint">
 				{isGames
 					? 'Add games — find titles in the same vibe'
-					: isBoardGames
-						? 'Add tabletop titles — find games in the same vibe'
-						: isBooks
-							? 'Add books or manga — find neighbors in tone'
-							: isSongs
-								? 'Add songs or artists — find tracks in the same vibe'
-								: 'Add one or more — find something in the same vein'}
+					: isRoblox
+						? 'Add Roblox experiences — find neighbors in the same vibe'
+						: isBoardGames
+							? 'Add tabletop titles — find games in the same vibe'
+							: isBooks
+								? 'Add books or manga — find neighbors in tone'
+								: isSongs
+									? 'Add songs or artists — find tracks in the same vibe'
+									: 'Add one or more — find something in the same vein'}
 			</p>
 		</div>
 	{/if}
@@ -641,15 +682,17 @@
 			onkeydown={onKeyDown}
 			placeholder={isFullVibe
 				? 'rainy sunday cozy, neon date night, slow morning…'
-				: isBoardGames
-					? 'cozy 2-player engine builder, loud party game…'
-					: isBooks
-						? 'quiet fantasy, bingeable manga, literary thriller…'
-						: isGames
-							? 'competitive tactical shooter, cozy farming, deep crafting…'
-							: isSongs
-								? 'late night drive, soft vocals, no pop…'
-								: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
+				: isRoblox
+					? 'obby with friends, tycoon grind, horror roleplay…'
+					: isBoardGames
+						? 'cozy 2-player engine builder, loud party game…'
+						: isBooks
+							? 'quiet fantasy, bingeable manga, literary thriller…'
+							: isGames
+								? 'competitive tactical shooter, cozy farming, deep crafting…'
+								: isSongs
+									? 'late night drive, soft vocals, no pop…'
+									: 'cyberpunk vibe, cozy ending, or movies with Nightcall / Radiohead…'}
 			rows="3"
 			disabled={isLoading}
 		></textarea>
@@ -804,16 +847,18 @@
 	<div
 		class="cta-row max-lg:sticky max-lg:bottom-[80px] max-lg:z-20 max-lg:border-t max-lg:border-black/10 max-lg:bg-[var(--window,var(--bg,#ffffff))] max-lg:pt-4 max-lg:pb-4"
 	>
-		<button class="cta" type="submit" disabled={isLoading || !canSubmit || boardGamesSoon}>
+		<button class="cta" type="submit" disabled={isLoading || !canSubmit || boardGamesSoon || robloxSoon}>
 			{#if isLoading}
 				<span class="spinner" aria-hidden="true"></span>
 				{theme === 'minimal' ? 'Searching…' : 'searching…'}
-			{:else if boardGamesSoon}
+			{:else if boardGamesSoon || robloxSoon}
 				{theme === 'minimal' ? 'Coming soon' : 'coming soon'}
 			{:else if isSongs}
 				{theme === 'minimal' ? 'Get song picks' : 'get song picks'}
 			{:else if isGames}
 				{theme === 'minimal' ? 'Get game picks' : 'get game picks'}
+			{:else if isRoblox}
+				{theme === 'minimal' ? 'Get Roblox picks' : 'get roblox picks'}
 			{:else if isBoardGames}
 				{theme === 'minimal' ? 'Get board game picks' : 'get board game picks'}
 			{:else}
@@ -823,7 +868,7 @@
 		<button
 			type="button"
 			class="cta cta-surprise"
-			disabled={isLoading || boardGamesSoon}
+			disabled={isLoading || boardGamesSoon || robloxSoon}
 			onclick={() => void surpriseMe()}
 		>
 			{theme === 'minimal' ? 'Surprise me' : 'surprise me'}

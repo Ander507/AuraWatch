@@ -1,5 +1,5 @@
 /**
- * Gemini prompts + parsers for books, board games, and full-vibe bundles.
+ * Gemini prompts + parsers for books, board games, Roblox, and full-vibe bundles.
  * Kept out of +server so that file doesn't grow into a novel.
  */
 
@@ -16,6 +16,7 @@ import {
 	type MaturityLevel
 } from '$lib/server/maturity';
 import { normalizeLanguage } from '$lib/languages';
+import { safeParseGeminiJson } from '$lib/server/geminiJson';
 
 const REC_LIMIT = 5;
 
@@ -43,6 +44,14 @@ export type GeminiBoardRec = {
 	searchQuery: string;
 	playerCount?: string;
 	complexity?: string;
+};
+
+export type GeminiRobloxRec = {
+	title: string;
+	releaseYear: string;
+	actualGenres: string[];
+	matchReason: string;
+	searchQuery: string;
 };
 
 export type GeminiVibeBundle = {
@@ -222,6 +231,72 @@ Return exactly ${REC_LIMIT} distinct board games, best match first.
 `.trim();
 }
 
+export function buildRobloxConciergePrompt(opts: {
+	genres: string[];
+	prompt: string;
+	likeTitles?: string[];
+	decade?: DecadeRange | null;
+	notesWeight?: number;
+	maturity?: MaturityLevel | null;
+	antiVibe?: string;
+	language?: string;
+}): string {
+	const genres = opts.genres.join(', ') || 'None';
+	const prompt = opts.prompt || '';
+	const likes = (opts.likeTitles || []).map((t) => t.trim()).filter(Boolean);
+	const likeLabel = likes.join(', ');
+	const era = decadePromptLabel(opts.decade || null);
+	const hasNotes = Boolean(prompt.trim());
+	const weight = parseNotesWeight(opts.notesWeight);
+	const anti = parseAntiVibe(opts.antiVibe);
+	const antiBlock = antiVibePromptBlock(anti);
+	const antiRule = antiVibeStrictRule(anti);
+	const maturity = opts.maturity ?? null;
+	const maturityBlock = maturityPromptBlock(maturity, 'games');
+
+	let likeBlock = '';
+	if (likes.length) {
+		likeBlock = `
+- Similar-to Roblox experiences: ${likes.map((t) => `'${t}'`).join(', ')}
+  Roblox neighbors — never recommend those exact experiences.`;
+	}
+
+	const weightingBlock = buildWeightingBlock({
+		weight,
+		hasNotes,
+		hasLikes: likes.length > 0,
+		kind: 'media'
+	});
+
+	return `
+You are an expert Roblox experience recommender (UGC games on Roblox.com — NOT Steam/console titles).
+USER INPUT:
+- Preferred Genres/Tags: ${genres}
+- Vibe/Prompt (Notes): '${prompt || '(none)'}'
+- Decade/Era (soft — Roblox titles skew recent): ${era}
+${maturityBlock}
+${antiBlock}${likeBlock}
+${languagePromptLine(opts.language)}
+${weightingBlock}
+
+STRICT RULES:
+1. Only real Roblox experiences that players can search and join on Roblox (Adopt Me, Brookhaven, Doors, Blade Ball — NOT Minecraft/Fortnite unless they exist as Roblox copies, and prefer originals).
+2. searchQuery MUST be the clean Roblox-searchable title (no "Roblox" suffix, no emoji spam).
+3. Prefer experiences that are actively played / well-known when the vibe allows — skip dead clones when a famous neighbor exists.
+4. NO THIRD PERSON in matchReason. Keep matchReason short — no nested quotes if you can help it.
+${likes.length ? `5. SIMILAR-TO: neighbors of ${likeLabel}, not those experiences.` : ''}
+${antiRule ? `${antiRule}` : ''}
+
+JSON OUTPUT (HARD):
+Return ONLY raw, valid, minified JSON. Do not use markdown formatting or code blocks. Escape all double quotes inside string values using a backslash (\\"). Do not include trailing commas.
+
+RESPONSE JSON FORMAT:
+{"recommendations":[{"title":"Exact Experience Title","releaseYear":"YYYY","actualGenres":["Obby"],"matchReason":"Direct 2-sentence pitch.","searchQuery":"Exact Experience Title"}]}
+
+Return exactly ${REC_LIMIT} distinct Roblox experiences, best match first.
+`.trim();
+}
+
 export function buildFullVibePrompt(opts: {
 	prompt: string;
 	genres?: string[];
@@ -289,8 +364,7 @@ function asList(parsed: any): any[] {
 }
 
 export function parseGeminiBookRecs(raw: string): GeminiBookRec[] {
-	const { repairAndParse } = requireParseHelpers();
-	const parsed = repairAndParse(raw);
+	const parsed = safeParseGeminiJson(raw);
 	const out: GeminiBookRec[] = [];
 	const seen = new Set<string>();
 	for (const item of asList(parsed)) {
@@ -319,8 +393,7 @@ export function parseGeminiBookRecs(raw: string): GeminiBookRec[] {
 }
 
 export function parseGeminiBoardRecs(raw: string): GeminiBoardRec[] {
-	const { repairAndParse } = requireParseHelpers();
-	const parsed = repairAndParse(raw);
+	const parsed = safeParseGeminiJson(raw);
 	const out: GeminiBoardRec[] = [];
 	const seen = new Set<string>();
 	for (const item of asList(parsed)) {
@@ -345,9 +418,32 @@ export function parseGeminiBoardRecs(raw: string): GeminiBoardRec[] {
 	return out;
 }
 
+export function parseGeminiRobloxRecs(raw: string): GeminiRobloxRec[] {
+	const parsed = safeParseGeminiJson(raw);
+	const out: GeminiRobloxRec[] = [];
+	const seen = new Set<string>();
+	for (const item of asList(parsed)) {
+		const title = String(item?.title || '').trim();
+		if (!title) continue;
+		const key = title.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({
+			title,
+			releaseYear: String(item?.releaseYear || item?.year || '').slice(0, 4),
+			actualGenres: Array.isArray(item?.actualGenres)
+				? item.actualGenres.map(String)
+				: [],
+			matchReason: String(item?.matchReason || item?.pitch || '').trim(),
+			searchQuery: String(item?.searchQuery || title).trim()
+		});
+		if (out.length >= REC_LIMIT) break;
+	}
+	return out;
+}
+
 export function parseGeminiVibeBundle(raw: string): GeminiVibeBundle {
-	const { repairAndParse } = requireParseHelpers();
-	const parsed = repairAndParse(raw);
+	const parsed = safeParseGeminiJson(raw);
 	const watch = parsed?.watch || parsed?.movie || parsed?.show;
 	const music = parsed?.music || parsed?.album || parsed?.song;
 	const snack = parsed?.snack || parsed?.drink || parsed?.pairing;
@@ -382,89 +478,4 @@ export function parseGeminiVibeBundle(raw: string): GeminiVibeBundle {
 			pitch: String(snack.pitch || snack.matchReason || '').trim()
 		}
 	};
-}
-
-/** making sure we actually use the repair pass for board games so it stops exploding */
-function requireParseHelpers() {
-	function stripJsonFences(raw: string) {
-		// gemini loves ```json wrappers for some reason
-		let s = (raw || '').trim();
-		if (s.startsWith('```')) {
-			s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-		}
-		const a = s.search(/[\[{]/);
-		const b = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
-		if (a !== -1 && b > a) s = s.slice(a, b + 1);
-		return s;
-	}
-
-	function escapeInternalQuotes(jsonish: string): string {
-		// gemini keeps putting raw double quotes inside strings and breaking the parser, stripping them here
-		let out = '';
-		let inString = false;
-		let escaped = false;
-		for (let i = 0; i < jsonish.length; i++) {
-			const c = jsonish[i];
-			if (escaped) {
-				out += c;
-				escaped = false;
-				continue;
-			}
-			if (c === '\\' && inString) {
-				out += c;
-				escaped = true;
-				continue;
-			}
-			if (c === '"') {
-				if (!inString) {
-					inString = true;
-					out += c;
-				} else {
-					// real end-of-string usually followed by : , } ] or end
-					const rest = jsonish.slice(i + 1);
-					if (/^\s*[,:}\]]/.test(rest) || /^\s*$/.test(rest)) {
-						inString = false;
-						out += c;
-					} else {
-						out += '\\"';
-					}
-				}
-				continue;
-			}
-			out += c;
-		}
-		return out;
-	}
-
-	function repairJsonText(raw: string): string {
-		let s = stripJsonFences(raw);
-		s = s.replace(/^\uFEFF/, '');
-		// curly quotes from copy-paste brains
-		s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
-		s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
-		s = s.replace(/,\s*([}\]])/g, '$1'); // trailing commas my beloved
-		s = escapeInternalQuotes(s);
-		return s;
-	}
-
-	function repairAndParse(raw: string): any {
-		const tries = [
-			repairJsonText(raw),
-			stripJsonFences(raw),
-			escapeInternalQuotes(stripJsonFences(raw)),
-			(raw || '').trim()
-		];
-		let lastErr: any = null;
-		for (const t of tries) {
-			if (!t) continue;
-			try {
-				return JSON.parse(t);
-			} catch (e) {
-				lastErr = e;
-			}
-		}
-		throw lastErr || new Error('model spat out unparseable junk');
-	}
-
-	return { repairAndParse };
 }

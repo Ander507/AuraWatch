@@ -219,4 +219,47 @@
 	.platform-dark .platform-max {
 		color: rgba(243, 244, 246, 0.4);
 	}
+
+	/* Beat Tailwind bg-white / text-black / border-* on desk-dark desktop */
+	:global(.desk-dark) .platform-desktop .platform-input {
+		border-color: #2a2f38 !important;
+		background: #080a0e !important;
+		background-color: #080a0e !important;
+		color: #e8eaed !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-input::placeholder {
+		color: #8b929e !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-input:focus {
+		border-color: #ff4c00 !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-dropdown {
+		border-color: #2a2f38 !important;
+		background: #080a0e !important;
+		background-color: #080a0e !important;
+		box-shadow: 3px 3px 0 #2a2f38;
+	}
+	:global(.desk-dark) .platform-desktop .platform-option {
+		color: #e8eaed !important;
+		background: transparent;
+		background-color: transparent;
+	}
+	:global(.desk-dark) .platform-desktop .platform-option:hover,
+	:global(.desk-dark) .platform-desktop :global(.platform-option.active) {
+		background: rgba(255, 76, 0, 0.14) !important;
+		background-color: rgba(255, 76, 0, 0.14) !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-tag {
+		border-color: #2a2f38 !important;
+		background: #141820 !important;
+		background-color: #141820 !important;
+		color: #e8eaed !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-tag:hover {
+		background: rgba(255, 76, 0, 0.14) !important;
+		background-color: rgba(255, 76, 0, 0.14) !important;
+	}
+	:global(.desk-dark) .platform-desktop .platform-max {
+		color: #8b929e !important;
+	}
 </style>

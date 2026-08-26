@@ -7,7 +7,8 @@ export type SurpriseFormat =
 	| 'songs'
 	| 'games'
 	| 'books'
-	| 'boardgames';
+	| 'boardgames'
+	| 'roblox';
 
 export type SurpriseRoll = {
 	types: SurpriseFormat[];
@@ -89,6 +90,16 @@ const VIBES: Record<SurpriseFormat, string[]> = {
 		'social deduction with real paranoia',
 		'heavy euro that rewards planning',
 		'cooperative puzzle against the board'
+	],
+	roblox: [
+		'obby parkour that is hard but fair',
+		'cozy roleplay town with friends',
+		'tycoon that hooks you for one more upgrade',
+		'survival horror lobby with friends screaming',
+		'simulator grind that still feels rewarding',
+		'story experience with real plot twists',
+		'pvp arena that respects skill',
+		'pet collecting with trading drama'
 	]
 };
 
@@ -139,6 +150,14 @@ const GENRE_POOLS: Record<SurpriseFormat, string[][]> = {
 		['2-Player', 'Light'],
 		['Social Deduction', 'Party'],
 		['Deckbuilding', 'Strategy']
+	],
+	roblox: [
+		['Obby', 'Parkour'],
+		['Roleplay', 'Town'],
+		['Tycoon', 'Simulator'],
+		['Horror', 'Survival'],
+		['PvP', 'Fighting'],
+		['Story', 'Adventure']
 	]
 };
 
@@ -149,7 +168,8 @@ const ALL_FORMATS: SurpriseFormat[] = [
 	'songs',
 	'games',
 	'books',
-	'boardgames'
+	'boardgames',
+	'roblox'
 ];
 
 function pick<T>(arr: T[]): T {

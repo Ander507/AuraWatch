@@ -198,8 +198,8 @@ export async function callGeminiFlash(
 		contents: [{ parts: [{ text: promptText }] }],
 		generationConfig: {
 			temperature: 0.7,
-			// 1024 was truncating song lists mid-json. never again.
-			maxOutputTokens: opts?.maxOutputTokens ?? 2048,
+			// bumping token limits and sanitizing gemini response strings so json parsing never crashes into catalog fallback
+			maxOutputTokens: opts?.maxOutputTokens ?? 4096,
 			// json mime makes gemini less chaotic (sometimes)
 			...(opts?.json ? { responseMimeType: 'application/json' } : {})
 		}
@@ -322,6 +322,10 @@ export async function callGeminiFlash(
 
 			const data = await res.json();
 			const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+			const finishReason = data?.candidates?.[0]?.finishReason;
+			if (finishReason && finishReason !== 'STOP') {
+				console.warn('gemini finishReason', finishReason, 'len', String(txt).length);
+			}
 
 			startIdx = (idx + 1) % theKeys.length;
 
@@ -329,7 +333,8 @@ export async function callGeminiFlash(
 				text: typeof txt === 'string' ? txt : JSON.stringify(txt),
 				raw: data,
 				keyUsed: keyId(keyToUse),
-				model: modelPath
+				model: modelPath,
+				finishReason
 			};
 		} catch (err) {
 			lastErr = err;

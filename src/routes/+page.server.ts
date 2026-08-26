@@ -20,7 +20,8 @@ function mapItem(i: SavedItem) {
 		coverUrl: i.coverUrl,
 		description: i.description,
 		externalId: i.externalId,
-		providers: savedItemProviders(i)
+		providers: savedItemProviders(i),
+		createdAt: i.createdAt?.toISOString?.() ?? null
 	};
 }
 

@@ -37,6 +37,12 @@ export function getDb(): AuraDb {
 	return dbInstance;
 }
 
+export function getLibsqlClient(): Client {
+	getDb();
+	if (!client) throw new Error('Turso client not ready');
+	return client;
+}
+
 /** lazy stand-in so `import { db } from '$lib/server/schema'` just works */
 export const db = new Proxy({} as AuraDb, {
 	get(_target, prop, receiver) {

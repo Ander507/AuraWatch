@@ -262,6 +262,16 @@
 		background: #fafafa;
 	}
 
+	:global(.desk-dark) .region-select {
+		--ink: #e8eaed;
+		--muted: #8b929e;
+		--line: #2a2f38;
+		--window: #080a0e;
+	}
+	:global(.desk-dark) .region-select .search:focus {
+		background: #141820;
+	}
+
 	.list {
 		list-style: none;
 		margin: 0;
@@ -291,6 +301,10 @@
 	.option:hover,
 	.option.highlight {
 		background: #f0f0f0;
+	}
+	:global(.desk-dark) .region-select .option:hover,
+	:global(.desk-dark) .region-select .option.highlight {
+		background: #141820;
 	}
 	.option.active {
 		color: var(--accent);
