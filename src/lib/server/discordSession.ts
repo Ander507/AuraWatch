@@ -5,6 +5,8 @@ import { sessions, users } from './schema';
 
 export const SESSION_COOKIE = 'aura_session';
 export const OAUTH_STATE_COOKIE = 'aura_oauth_state';
+/** where to send them after Discord OAuth — set on /login/discord */
+export const OAUTH_NEXT_COOKIE = 'aura_oauth_next';
 
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 

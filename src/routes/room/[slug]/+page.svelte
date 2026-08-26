@@ -5,6 +5,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { signOutEverywhere } from '$lib/discordSignIn';
+	import { signInQuery } from '$lib/authRedirect';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import {
 		ROOM_EXPIRED_MSG,
@@ -91,6 +92,7 @@
 	);
 
 	const homeHref = resolve('/');
+	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
 
 	let shareUrl = $derived(`${page.url.origin}/room/${room.slug}`);
 	let storageKey = $derived(`aurawatch_room_${room.slug}`);
@@ -600,7 +602,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={resolve('/signin')}>Sign in</a>
+			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
 		{/if}
 	</div>
 {/snippet}

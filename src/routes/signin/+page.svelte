@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { ui } from '$lib/uiTheme.svelte';
 	import { signInWithDiscord } from '$lib/discordSignIn';
 	import { registerWithEmail, signInWithEmail } from '$lib/emailAuth';
 	import { usernameToAuthEmail } from '$lib/usernameAuth';
+	import { safeCallbackUrl } from '$lib/authRedirect';
 
 	let { data, form } = $props();
+
+	let afterLogin = $derived(safeCallbackUrl(page.url.searchParams.get('callbackUrl')));
 
 	let modePick = $state<'login' | 'register' | null>(null);
 	let mode = $derived(modePick ?? form?.mode ?? 'login');
@@ -34,14 +38,14 @@
 			}
 			const result =
 				mode === 'register'
-					? await registerWithEmail({ email, password, name })
-					: await signInWithEmail(email, password);
+					? await registerWithEmail({ email, password, name, after: afterLogin })
+					: await signInWithEmail(email, password, afterLogin);
 			if (!result.ok) {
 				clientError = result.error;
 				return;
 			}
 			await invalidateAll();
-			await goto(resolve('/'));
+			await goto(afterLogin);
 		} catch {
 			clientError = 'Couldn’t do that — try again';
 		} finally {
@@ -74,7 +78,7 @@
 			<h1>{mode === 'login' ? 'Sign in' : 'Create account'}</h1>
 			<p>Save vibe picks to the cloud and share your list with friends.</p>
 
-			<button type="button" class="btn discord" onclick={() => void signInWithDiscord()}>
+			<button type="button" class="btn discord" onclick={() => void signInWithDiscord(afterLogin)}>
 				Login with Discord
 			</button>
 

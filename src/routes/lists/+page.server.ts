@@ -1,6 +1,7 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { isTursoConfigured } from '$lib/server/db';
+import { signInHref } from '$lib/authRedirect';
 import {
 	listUserPlaylists,
 	mapPlaylistPack,
@@ -13,7 +14,7 @@ import {
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const session = await locals.auth();
 	if (!session?.user?.id) {
-		throw redirect(303, `/signin?callbackUrl=${encodeURIComponent(url.pathname)}`);
+		throw redirect(303, signInHref(url.pathname));
 	}
 
 	if (!isTursoConfigured()) {

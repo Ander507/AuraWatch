@@ -2,9 +2,11 @@ import { redirect } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
 import { authCookieDomain, discordRedirectUri } from '$lib/discordAuth';
+import { safeCallbackUrl } from '$lib/authRedirect';
 import { getDb, isTursoConfigured } from '$lib/server/db';
 import { accounts, users } from '$lib/server/schema';
 import {
+	OAUTH_NEXT_COOKIE,
 	OAUTH_STATE_COOKIE,
 	SESSION_COOKIE,
 	createUserSession,
@@ -130,14 +132,18 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 	const cookieBase = { path: '/', ...(domain ? { domain } : {}) };
 
 	const expectedState = cookies.get(OAUTH_STATE_COOKIE);
+	const next = safeCallbackUrl(cookies.get(OAUTH_NEXT_COOKIE));
 	cookies.delete(OAUTH_STATE_COOKIE, cookieBase);
+	cookies.delete(OAUTH_NEXT_COOKIE, cookieBase);
 
 	const code = url.searchParams.get('code');
 	const state = url.searchParams.get('state');
 
-	if (url.searchParams.get('error') || !code) throw redirect(303, '/signin?error=OAuthCallback');
+	if (url.searchParams.get('error') || !code) {
+		throw redirect(303, next === '/' ? '/signin?error=OAuthCallback' : `/signin?error=OAuthCallback&callbackUrl=${encodeURIComponent(next)}`);
+	}
 	if (!state || !expectedState || state !== expectedState) {
-		throw redirect(303, '/signin?error=OAuthState');
+		throw redirect(303, next === '/' ? '/signin?error=OAuthState' : `/signin?error=OAuthState&callbackUrl=${encodeURIComponent(next)}`);
 	}
 	if (!isTursoConfigured()) throw redirect(303, '/signin?error=Configuration');
 
@@ -152,7 +158,14 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 		console.error('discord callback boom', e);
 	}
 
-	if (!session) throw redirect(303, '/signin?error=OAuthCallback');
+	if (!session) {
+		throw redirect(
+			303,
+			next === '/'
+				? '/signin?error=OAuthCallback'
+				: `/signin?error=OAuthCallback&callbackUrl=${encodeURIComponent(next)}`
+		);
+	}
 
 	cookies.set(SESSION_COOKIE, session.sessionToken, {
 		...cookieBase,
@@ -162,5 +175,5 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 		expires: session.expires
 	});
 
-	throw redirect(303, '/');
+	throw redirect(303, next);
 };

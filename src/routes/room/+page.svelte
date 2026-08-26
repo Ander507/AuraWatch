@@ -4,6 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { signOutEverywhere } from '$lib/discordSignIn';
+	import { signInQuery } from '$lib/authRedirect';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import { parseRoomFilters } from '$lib/groupVibe';
@@ -49,6 +50,7 @@
 	let deleteError = $state('');
 
 	const homeHref = resolve('/');
+	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
 
 	const FORMAT_OPTIONS = [
 		{ id: 'movie', label: 'Movies' },
@@ -295,7 +297,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={resolve('/signin')}>Sign in</a>
+			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
 		{/if}
 	</div>
 {/snippet}
@@ -434,7 +436,7 @@
 						Sign in to create a Group Vibe Room. Guests joining your link never need an account.
 					</p>
 					<p class="room-back">
-						<a href={resolve('/signin')}>Sign in →</a>
+						<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
 					</p>
 				{:else}
 					<form class="room-form vibe-form" onsubmit={createRoom}>
@@ -524,7 +526,7 @@
 								account.
 							</p>
 							<p class="room-back">
-								<a href={resolve('/signin')}>Sign in →</a>
+								<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
 							</p>
 						{:else}
 							<form class="room-form vibe-form" onsubmit={createRoom}>

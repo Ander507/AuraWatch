@@ -1,7 +1,8 @@
 import { redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { authCookieDomain, discordRedirectUri } from '$lib/discordAuth';
-import { OAUTH_STATE_COOKIE, randomToken } from '$lib/server/discordSession';
+import { safeCallbackUrl } from '$lib/authRedirect';
+import { OAUTH_NEXT_COOKIE, OAUTH_STATE_COOKIE, randomToken } from '$lib/server/discordSession';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = ({ cookies, url }) => {
@@ -10,14 +11,18 @@ export const GET: RequestHandler = ({ cookies, url }) => {
 
 	const state = randomToken(16);
 	const domain = authCookieDomain(url.origin);
-	cookies.set(OAUTH_STATE_COOKIE, state, {
+	const cookieBase = {
 		path: '/',
 		httpOnly: true,
-		sameSite: 'lax',
+		sameSite: 'lax' as const,
 		secure: url.protocol === 'https:',
 		maxAge: 60 * 10,
 		...(domain ? { domain } : {})
-	});
+	};
+
+	cookies.set(OAUTH_STATE_COOKIE, state, cookieBase);
+	const next = safeCallbackUrl(url.searchParams.get('callbackUrl'));
+	cookies.set(OAUTH_NEXT_COOKIE, next, cookieBase);
 
 	const authorize = new URL('https://discord.com/api/oauth2/authorize');
 	authorize.searchParams.set('client_id', clientId);

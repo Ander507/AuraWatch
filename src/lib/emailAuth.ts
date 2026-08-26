@@ -1,5 +1,6 @@
 import { signIn } from '@auth/sveltekit/client';
 import { deserialize } from '$app/forms';
+import { safeCallbackUrl } from '$lib/authRedirect';
 
 export type EmailAuthResult = { ok: true } | { ok: false; error: string };
 
@@ -13,9 +14,14 @@ async function csrfToken() {
 	}
 }
 
-export async function signInWithEmail(email: string, password: string): Promise<EmailAuthResult> {
+export async function signInWithEmail(
+	email: string,
+	password: string,
+	after?: string
+): Promise<EmailAuthResult> {
 	const csrf = await csrfToken();
-	const redirectTo = `${window.location.origin}/`;
+	const path = safeCallbackUrl(after, '/');
+	const redirectTo = `${window.location.origin}${path}`;
 	try {
 		const result = await signIn('credentials', {
 			email,
@@ -61,6 +67,7 @@ export async function registerWithEmail(opts: {
 	email: string;
 	password: string;
 	name?: string;
+	after?: string;
 }): Promise<EmailAuthResult> {
 	const fd = new FormData();
 	fd.set('email', opts.email);
@@ -81,5 +88,5 @@ export async function registerWithEmail(opts: {
 		return { ok: false, error: 'Couldn’t create account' };
 	}
 
-	return signInWithEmail(opts.email, opts.password);
+	return signInWithEmail(opts.email, opts.password, opts.after);
 }

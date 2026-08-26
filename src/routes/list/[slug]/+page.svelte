@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { preloadCode, preloadData, goto } from '$app/navigation';
 	import { signOutEverywhere } from '$lib/discordSignIn';
+	import { signInQuery } from '$lib/authRedirect';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import RecommendForm from '$lib/components/RecommendForm.svelte';
 	import { SITE } from '$lib/seo';
@@ -18,6 +19,7 @@
 	let session = $derived(page.data.session);
 
 	const homeHref = resolve('/');
+	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
 
 	// prefer current origin so local shares don't point at undeployed prod
 	let shareUrl = $derived(`${page.url.origin}/list/${data.list.slug}`);
@@ -175,7 +177,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={resolve('/signin')}>Sign in</a>
+			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
 		{/if}
 	</div>
 {/snippet}

@@ -7,6 +7,7 @@
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
 	import { signOutEverywhere } from '$lib/discordSignIn';
+	import { signInQuery } from '$lib/authRedirect';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
@@ -394,6 +395,7 @@
 	let playlistOverride = $state<CloudPlaylistClient[] | null>(null);
 
 	let session = $derived(page.data.session);
+	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
 	let cloudPlaylists = $derived(
 		(playlistOverride ?? page.data.cloudPlaylists ?? []) as CloudPlaylistClient[]
 	);
@@ -2731,7 +2733,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<button type="button" class="auth-btn" onclick={() => openLoginPrompt()}>Sign in</button>
+			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
 		{/if}
 	</div>
 {/snippet}
