@@ -56,7 +56,7 @@
 	<!-- keeping the text small and muted so it doesn't ruin the brutalist aesthetic -->
 	<footer class="w-full p-4 text-center text-xs text-gray-500 max-lg:pb-24 dark:text-zinc-500">
 		<!-- making sure it sits above the mobile bottom nav so it's actually visible -->
-		AuraWatch is a free service. 'Buy on Amazon' links are affiliate links. As an Amazon Associate,
-		we earn from qualifying purchases.
+		AuraWatch v{SITE.version} · AuraWatch is a free service. 'Buy on Amazon' links are affiliate
+		links. As an Amazon Associate, we earn from qualifying purchases.
 	</footer>
 </div>

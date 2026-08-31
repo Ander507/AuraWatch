@@ -17,6 +17,8 @@ export type VibeUrlState = {
 	region: string;
 	language: string;
 	notesWeight: number | null;
+	runtime?: string;
+	services?: string[];
 };
 
 const FORMAT_IDS = new Set([
@@ -59,7 +61,10 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		params.has('platforms') ||
 		params.has('platform') ||
 		params.has('lang') ||
-		params.has('language');
+		params.has('language') ||
+		params.has('runtime') ||
+		params.has('services') ||
+		params.has('apps');
 	if (!hasAny) return null;
 
 	const typesRaw = params.get('types') || params.get('format') || '';
@@ -106,7 +111,9 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		platforms: splitList(params.get('platforms') || params.get('platform')),
 		region: (params.get('region') || '').trim().toUpperCase(),
 		language: (params.get('lang') || params.get('language') || '').trim(),
-		notesWeight
+		notesWeight,
+		runtime: (params.get('runtime') || '').trim().toLowerCase(),
+		services: splitList(params.get('services') || params.get('apps'))
 	};
 }
 
@@ -127,6 +134,8 @@ export function buildVibeSearchParams(state: VibeUrlState): URLSearchParams {
 	if (state.notesWeight != null && state.notesWeight !== 70) {
 		p.set('weight', String(state.notesWeight));
 	}
+	if (state.runtime) p.set('runtime', state.runtime);
+	if (state.services?.length) p.set('services', state.services.join(','));
 	return p;
 }
 

@@ -16,6 +16,20 @@
 	} from '$lib/groupVibe';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 	import { SITE } from '$lib/seo';
+	import { matchPercent, matchTone } from '$lib/matchScore';
+	import { RESULT_ERA_OPTIONS, matchesResultEra, parseRecYear, type ResultEra } from '$lib/resultEra';
+	import {
+		isOnLocalList,
+		loadIgnoredList,
+		loadWatchlist,
+		recLocalId,
+		saveIgnoredList,
+		saveWatchlist,
+		toLocalTitle,
+		toggleLocalTitle,
+		upsertLocalTitle,
+		type LocalTitle
+	} from '$lib/localWatch';
 	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import '$lib/styles/app-chrome.css';
 
@@ -122,6 +136,28 @@
 					normalizeRec(r as Record<string, unknown>)
 				)
 	);
+
+	let ignoredList = $state<LocalTitle[]>([]);
+	let watchlist = $state<LocalTitle[]>([]);
+	let resultEra = $state<ResultEra>('all');
+	let groupNotes = $derived(
+		participants
+			.map((p) => p.vibeNotes)
+			.filter(Boolean)
+			.join(' ')
+	);
+	let visibleResults = $derived.by(() => {
+		const ignored = new Set(ignoredList.map((x) => x.id));
+		// duplicate titles would collide on the keyed each — keep the first
+		const seen = new Set<string>();
+		return results.filter((item) => {
+			const id = recLocalId(item);
+			if (ignored.has(id) || seen.has(id)) return false;
+			if (!matchesResultEra(parseRecYear(item.seasonInfo, item.title), resultEra)) return false;
+			seen.add(id);
+			return true;
+		});
+	});
 	let matchedAt = $derived(
 		syncOverride?.slug === data.room.slug
 			? syncOverride.matchedAt
@@ -280,6 +316,26 @@
 		return tagged || null;
 	}
 
+	function itemMatchPercent(item: RecItem): number {
+		return matchPercent({
+			itemGenres: item.genres || [],
+			userGenres: [],
+			pitch: item.pitch,
+			notes: groupNotes,
+			notesWeight: 70
+		});
+	}
+
+	function markSeen(item: RecItem) {
+		ignoredList = upsertLocalTitle(ignoredList, toLocalTitle(item));
+		saveIgnoredList(ignoredList);
+	}
+
+	function toggleWatchlistItem(item: RecItem) {
+		watchlist = toggleLocalTitle(watchlist, toLocalTitle(item));
+		saveWatchlist(watchlist);
+	}
+
 	function ctaLabel(item: RecItem): string {
 		const kind = recKind(item);
 		if (kind === 'song') return 'Listen';
@@ -303,6 +359,8 @@
 	onMount(() => {
 		hydrateUiTheme();
 		loadRememberedName();
+		ignoredList = loadIgnoredList();
+		watchlist = loadWatchlist();
 		clockLabel = formatClock();
 		const clockId = setInterval(() => {
 			clockLabel = formatClock();
@@ -756,10 +814,28 @@
 			</p>
 		{/if}
 		{#if results.length}
-			<ul class="result-list">
-				{#each results as item, i (item.title + i)}
+			<div class="era-filter" role="group" aria-label="Filter by era">
+				{#each RESULT_ERA_OPTIONS as opt (opt.id)}
+					<button
+						type="button"
+						class="era-chip"
+						class:active={resultEra === opt.id}
+						aria-pressed={resultEra === opt.id}
+						onclick={() => (resultEra = opt.id)}
+					>
+						{opt.label}
+					</button>
+				{/each}
+			</div>
+			{#if visibleResults.length}
+			<!-- converting cards into a clean multi-column responsive grid with decade filters -->
+			<ul class="result-list grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 max-w-7xl mx-auto px-4">
+				{#each visibleResults as item (recLocalId(item))}
 					{@const href = primaryHref(item)}
 					{@const providers = item.providers?.filter((p) => p?.name)?.slice(0, 8) ?? []}
+					{@const pct = itemMatchPercent(item)}
+					{@const tone = matchTone(pct)}
+					{@const bookmarked = isOnLocalList(watchlist, recLocalId(item))}
 					<li class="result-card">
 						{#if item.cover}
 							<img class="result-cover" src={item.cover} alt="" loading="lazy" decoding="async" />
@@ -773,6 +849,31 @@
 							</div>
 						{/if}
 						<div class="result-body">
+							<div class="card-quick-actions">
+								<span class="match-pct match-{tone}">{pct}% Match</span>
+								<button
+									type="button"
+									class="card-icon-btn"
+									class:on={bookmarked}
+									aria-label={bookmarked ? 'Remove from Watchlist' : 'Add to Watchlist'}
+									aria-pressed={bookmarked}
+									onclick={() => toggleWatchlistItem(item)}
+								>
+									<svg viewBox="0 0 24 24" width="15" height="15" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" aria-hidden="true">
+										<path d="M6 4h12v16l-6-4-6 4V4z" />
+									</svg>
+								</button>
+								<button
+									type="button"
+									class="card-icon-btn"
+									aria-label="Seen It — hide this pick"
+									onclick={() => markSeen(item)}
+								>
+									<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+										<path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round" />
+									</svg>
+								</button>
+							</div>
 							<p class="result-title">{item.title}</p>
 							{#if item.artist || item.author}
 								<p class="result-sub">{item.artist || item.author}</p>
@@ -862,6 +963,15 @@
 					</li>
 				{/each}
 			</ul>
+			{:else}
+				<p class="empty-state">
+					{#if resultEra !== 'all'}
+						Nothing in this era on the current pile — try All Time.
+					{:else}
+						Those picks are marked seen. Restore them from Watchlist on Match.
+					{/if}
+				</p>
+			{/if}
 		{:else if !roomGone && !matching}
 			<p class="empty-state">
 				{#if participants.length < 1}
@@ -1061,8 +1171,82 @@
 		color: var(--muted, #666);
 	}
 
-	.participant-list,
 	.result-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		width: 100%;
+	}
+
+	.era-filter {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin: 0 0 0.75rem;
+	}
+	.era-chip {
+		appearance: none;
+		border: 1.5px solid var(--line, #111);
+		background: var(--panel, #fff);
+		color: var(--ink, #111);
+		cursor: pointer;
+		padding: 0.28rem 0.55rem;
+		font: inherit;
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	.era-chip.active {
+		background: var(--accent, #ff4c00);
+		color: var(--on-accent, #fff);
+		border-color: var(--accent, #ff4c00);
+	}
+
+	.card-quick-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin: 0 0 0.4rem;
+	}
+	.match-pct {
+		margin-right: auto;
+		font-size: 0.72rem;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.match-pct.match-high {
+		color: #16a34a;
+	}
+	.match-pct.match-mid {
+		color: #ca8a04;
+	}
+	.match-pct.match-low {
+		color: var(--muted, #666);
+	}
+	.card-icon-btn {
+		appearance: none;
+		width: 2rem;
+		height: 2rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1.5px solid var(--line, #111);
+		background: var(--panel, #fff);
+		color: var(--ink, #111);
+		cursor: pointer;
+		flex-shrink: 0;
+		padding: 0;
+	}
+	.card-icon-btn.on {
+		background: var(--accent, #ff4c00);
+		color: var(--on-accent, #fff);
+		border-color: var(--accent, #ff4c00);
+	}
+
+	.participant-list {
 		list-style: none;
 		margin: 0;
 		padding: 0;
@@ -1102,18 +1286,18 @@
 
 	.result-card {
 		display: flex;
-		gap: 0.85rem;
-		padding: 0.9rem 0;
-		border-bottom: 2px solid var(--line, #111);
-	}
-
-	.result-card:last-child {
-		border-bottom: none;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 0.75rem;
+		border: 2px solid var(--line, #111);
+		min-width: 0;
+		background: var(--window, #fff);
 	}
 
 	.result-cover {
-		width: 4.5rem;
-		height: 6.5rem;
+		width: 100%;
+		height: auto;
+		aspect-ratio: 2 / 3;
 		object-fit: cover;
 		flex-shrink: 0;
 		border: 2px solid var(--line, #111);

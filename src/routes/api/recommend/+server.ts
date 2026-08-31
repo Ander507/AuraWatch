@@ -60,7 +60,7 @@ import {
 	seriesLengthStrictRule,
 	type SeriesLengthId
 } from '$lib/server/seriesLength';
-import { fetchTvSeasonCount } from '$lib/server/tmdbTvDetails';
+import { fetchTvSeasonCount, fetchTmdbRuntimeMinutes } from '$lib/server/tmdbTvDetails';
 import { tmdbCriticPercent } from '$lib/server/tmdbCriticScore';
 import {
 	maturityPromptBlock,
@@ -96,6 +96,14 @@ import {
 	parseGeminiRobloxRecs,
 	parseGeminiVibeBundle
 } from '$lib/server/extraFormatPrompts';
+import {
+	parseRuntimeBudget,
+	runtimeAllowed,
+	runtimePromptBlock,
+	runtimeStrictRule,
+	type RuntimeBudget
+} from '$lib/runtimeBudget';
+import { parseServiceIds, servicesPromptBlock } from '$lib/myServices';
 
 /** Season count for TV picks — optional hard gate when Series Length is set. */
 async function resolveTvSeasons(
@@ -112,6 +120,20 @@ async function resolveTvSeasons(
 		return { ok: false, number_of_seasons: count, seasons_label: seasonsLabel(count) };
 	}
 	return { ok: true, number_of_seasons: count, seasons_label: seasonsLabel(count) };
+}
+
+async function movieRuntimeGate(
+	tmdbId: number,
+	mediaType: 'movie' | 'tv',
+	budget: RuntimeBudget,
+	language?: string | null
+): Promise<{ ok: boolean; minutes: number | undefined }> {
+	if (!tmdbId) return { ok: true, minutes: undefined };
+	const minutes = await fetchTmdbRuntimeMinutes(tmdbId, mediaType, language);
+	if (mediaType === 'movie' && !runtimeAllowed(minutes, budget)) {
+		return { ok: false, minutes: minutes ?? undefined };
+	}
+	return { ok: true, minutes: minutes ?? undefined };
 }
 
 const REC_LIMIT = 5;
@@ -562,6 +584,8 @@ function buildConciergePrompt(opts: {
 	seriesLength?: SeriesLengthId | null;
 	antiVibe?: string;
 	language?: string;
+	runtimeBudget?: RuntimeBudget;
+	services?: string[];
 }) {
 	const type = formatLabel(opts.types);
 	const allowed = allowedMediaTypes(opts.types);
@@ -585,6 +609,10 @@ function buildConciergePrompt(opts: {
 	const anti = parseAntiVibe(opts.antiVibe);
 	const antiBlock = antiVibePromptBlock(anti);
 	const antiRule = antiVibeStrictRule(anti);
+	const runtimeBudget = opts.runtimeBudget || '';
+	const runtimeLine = runtimePromptBlock(runtimeBudget);
+	const runtimeRule = runtimeStrictRule(runtimeBudget);
+	const servicesLine = servicesPromptBlock(opts.services || []);
 
 	const hasNotes = Boolean(prompt.trim());
 	const weight = parseNotesWeight(opts.notesWeight);
@@ -631,6 +659,8 @@ USER INPUT:
 ${eraLine}
 ${maturityLine}
 ${seriesLengthLine}
+${runtimeLine}
+${servicesLine}
 ${antiBlock}
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${likeBlock}
 ${languagePromptLine(opts.language)}
@@ -656,6 +686,7 @@ ${opts.decade ? `9. ERA (HARD): releaseYear MUST be between ${opts.decade.yearFr
 ${likes.length ? `${opts.decade ? '10' : '9'}. SIMILAR-TO: Recommend titles LIKE ${likeLabel}, not those titles themselves. Apply the PRIORITY WEIGHTING block when Notes are also present.` : ''}
 ${maturityRule ? `${maturityRule}` : ''}
 ${seriesLengthRule ? `${seriesLengthRule}` : ''}
+${runtimeRule ? `${runtimeRule}` : ''}
 ${antiRule ? `${antiRule}` : ''}
 
 RESPONSE JSON FORMAT:
@@ -833,6 +864,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	);
 	const region = normalizeRegion(body.region);
 	const language = normalizeLanguage(body.language ?? body.lang ?? body.locale);
+	const runtimeBudget = parseRuntimeBudget(body.runtime ?? body.runtimeBudget);
+	const wantedServices = parseServiceIds(body.services ?? body.apps ?? body.streamers);
 
 	const likeTitlesRaw: string[] = [];
 	if (Array.isArray(body.likeTitles)) {
@@ -882,7 +915,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		maturity,
 		priceRange,
 		platforms: targetPlatforms,
-		seriesLength
+		seriesLength,
+		runtime: runtimeBudget || null,
+		services: wantedServices
 	});
 	const cached = await cacheGet<Record<string, unknown>>(cacheKey);
 	if (cached && cached.ok) {
@@ -1735,6 +1770,13 @@ export const POST: RequestHandler = async ({ request }) => {
 							mediaType: similar.mediaType,
 							language
 						});
+						const runtime = await movieRuntimeGate(
+							similar.id,
+							similar.mediaType,
+							runtimeBudget,
+							language
+						);
+						if (!runtime.ok) continue;
 						const mediaType = mediaLabelFromTmdb(similar.mediaType, selectedTypes);
 						const searchQuery = similar.year
 							? `${similar.title} (${similar.year})`
@@ -1767,6 +1809,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							providers: watch.providers,
 							watch_link: watch.watchLink,
 							zflix_url: getZflixUrl(similar.title),
+							runtimeMinutes: runtime.minutes,
 							likeTitle: similar.referenceTitle,
 							likeTitles: similar.referenceTitles
 						});
@@ -1821,7 +1864,9 @@ export const POST: RequestHandler = async ({ request }) => {
 				maturity,
 				seriesLength,
 				antiVibe,
-				language
+				language,
+				runtimeBudget,
+				services: wantedServices
 			});
 			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 4096 });
 			const parsedRecs = parseGeminiRecs(gemini.text);
@@ -1869,6 +1914,8 @@ export const POST: RequestHandler = async ({ request }) => {
 					tmdbId > 0
 						? await fetchTmdbTrailerKey({ tmdbId, mediaType: tmdbKind, language })
 						: null;
+				const runtime = await movieRuntimeGate(tmdbId, tmdbKind, runtimeBudget, language);
+				if (!runtime.ok) continue;
 
 				enriched.push({
 					title: tmdb?.title || rec.title,
@@ -1892,6 +1939,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					providers: watch.providers,
 					watch_link: watch.watchLink,
 					zflix_url: getZflixUrl(rec.title),
+					runtimeMinutes: runtime.minutes,
 					likeTitle: likeLabel || undefined,
 					likeTitles: likeTitles.length ? likeTitles : undefined
 				});

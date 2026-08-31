@@ -21,7 +21,39 @@
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
+	import ListsDrawer from '$lib/components/ListsDrawer.svelte';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
+	import { matchPercent, matchTone, matchWhyChips } from '$lib/matchScore';
+	import { RESULT_ERA_OPTIONS, matchesResultEra, parseRecYear, type ResultEra } from '$lib/resultEra';
+	import {
+		RUNTIME_OPTIONS,
+		parseRuntimeBudget,
+		runtimeAllowed,
+		type RuntimeBudget
+	} from '$lib/runtimeBudget';
+	import {
+		STREAM_SERVICES,
+		itemOnMyServices,
+		loadMyServices,
+		parseServiceIds,
+		saveMyServices
+	} from '$lib/myServices';
+	import { NOT_THIS_STEERS, applyNotThis, type NotThisSteer } from '$lib/notThis';
+	import { clockOnlySky, readTonightSky, skyHeadline, type TonightSky } from '$lib/tonightSky';
+	import { loadRecentVibes, pushRecentVibe, type RecentVibe } from '$lib/recentVibes';
+	import {
+		isOnLocalList,
+		loadIgnoredList,
+		loadWatchlist,
+		recLocalId,
+		removeLocalTitle,
+		saveIgnoredList,
+		saveWatchlist,
+		toLocalTitle,
+		toggleLocalTitle,
+		upsertLocalTitle,
+		type LocalTitle
+	} from '$lib/localWatch';
 	import { buildVibeSearchParams, parseVibeSearchParams, vibeShareUrl } from '$lib/vibeUrl';
 	import { rollSurpriseMe } from '$lib/surpriseMe';
 	import { SITE } from '$lib/seo';
@@ -292,6 +324,10 @@
 	let selectedPriceRange = $state('');
 	let selectedPlatforms = $state<string[]>([]);
 	let selectedSeasonCount = $state('');
+	let selectedRuntime = $state<RuntimeBudget>('');
+	let myServices = $state<string[]>([]);
+	let tonightSky = $state<TonightSky | null>(null);
+	let recentVibes = $state<RecentVibe[]>([]);
 	let showAdvanced = $state(false);
 	let isLoading = $state(false);
 	let errMsg = $state('');
@@ -303,6 +339,10 @@
 	// adding a clean zero-result fallback state so the UI never breaks when a query comes back empty
 	let vibeMissed = $state(false);
 	let auraList = $state<AuraListItem[]>([]);
+	let ignoredList = $state<LocalTitle[]>([]);
+	let watchlist = $state<LocalTitle[]>([]);
+	let listsDrawer = $state(false);
+	let resultEra = $state<ResultEra>('all');
 	let viewMode = $state<'match' | 'list'>('match');
 	// moving tabs to a bottom nav bar because making users reach to the top of their phone is terrible ux
 	let mobilePane = $state<'vibe' | 'match' | 'list'>('vibe');
@@ -442,6 +482,7 @@
 		storeLinks?: Array<{ platform: string; url: string; store?: string }>;
 		complexity?: string;
 		playingTime?: number;
+		runtimeMinutes?: number;
 		criticScore?: number;
 		vibeLabel?: string;
 		watch?: Rec;
@@ -469,6 +510,31 @@
 	);
 
 	let results = $state<Rec[]>([]);
+
+	let visibleResults = $derived.by(() => {
+		const ignored = new Set(ignoredList.map((x) => x.id));
+		// same title twice would blow up the keyed each, so first one wins
+		const seen = new Set<string>();
+		return results.filter((item) => {
+			const id = recLocalId(item);
+			if (ignored.has(id) || seen.has(id)) return false;
+			const year = parseRecYear(item.seasonInfo, item.title);
+			if (!matchesResultEra(year, resultEra)) return false;
+			const minutes =
+				typeof item.runtimeMinutes === 'number'
+					? item.runtimeMinutes
+					: typeof item.playingTime === 'number'
+						? item.playingTime
+						: null;
+			if (!runtimeAllowed(minutes, selectedRuntime)) return false;
+			// songs/games/books reuse `providers` for store + listen links, so the
+			// streaming pins only get a vote on things you actually stream
+			if (isWatchRec(item) && !itemOnMyServices(item.providers, myServices)) return false;
+			if (item.watch && !itemOnMyServices(item.watch.providers, myServices)) return false;
+			seen.add(id);
+			return true;
+		});
+	});
 
 	let visibleGenres = $derived.by(() => {
 		if (isSongs) return GENRES_BY_FORMAT.songs;
@@ -506,7 +572,9 @@
 			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0) +
 			(zflixEnabled && isMediaLane ? 1 : 0) +
 			(selectedMaturity && isMediaLane ? 1 : 0) +
-			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0)
+			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0) +
+			(selectedRuntime ? 1 : 0) +
+			(myServices.length ? 1 : 0)
 	);
 
 	/** Actual API genres only — never parrot user picks */
@@ -537,6 +605,9 @@
 		}
 		if (item.mediaType) parts.push(item.mediaType);
 		if (item.seasonInfo) parts.push(item.seasonInfo);
+		if (item.runtimeMinutes && item.runtimeMinutes > 0) {
+			parts.push(`${item.runtimeMinutes}m`);
+		}
 		const seasonInfoHasSeasons = /season/i.test(item.seasonInfo || '');
 		if (!seasonInfoHasSeasons) {
 			if (item.seasons_label) parts.push(item.seasons_label);
@@ -715,6 +786,18 @@
 		return item.kind === 'vibe' || item.mediaType === 'Vibe Package';
 	}
 
+	// anything that lands on a streaming app rather than a store or a shelf
+	function isWatchRec(item: Rec): boolean {
+		return !(
+			isSongRec(item) ||
+			isGameRec(item) ||
+			isBookRec(item) ||
+			isBoardRec(item) ||
+			isRobloxRec(item) ||
+			isVibeRec(item)
+		);
+	}
+
 	function previewKey(item: Rec, i: number) {
 		return `${item.title}::${i}`;
 	}
@@ -844,6 +927,12 @@
 					: typeof raw?.playing_time === 'number'
 						? raw.playing_time
 						: undefined,
+			runtimeMinutes:
+				typeof raw?.runtimeMinutes === 'number'
+					? raw.runtimeMinutes
+					: typeof raw?.runtime === 'number'
+						? raw.runtime
+						: undefined,
 			vibeLabel: raw?.vibeLabel ? String(raw.vibeLabel) : undefined,
 			watch: raw?.watch ? normalizeRec(raw.watch) : undefined,
 			music: raw?.music ? normalizeRec(raw.music) : undefined,
@@ -865,7 +954,9 @@
 			seriesLength: selectedSeasonCount,
 			region: watchRegion,
 			language: selectedLanguage,
-			notesWeight
+			notesWeight,
+			runtime: selectedRuntime,
+			services: myServices
 		};
 	}
 
@@ -1057,6 +1148,8 @@
 		if (parsed.region) watchRegion = normalizeRegion(parsed.region);
 		if (parsed.language) selectedLanguage = normalizeLanguage(parsed.language);
 		if (parsed.notesWeight != null) notesWeight = parsed.notesWeight;
+		if (parsed.runtime) selectedRuntime = parseRuntimeBudget(parsed.runtime);
+		if (parsed.services?.length) myServices = parseServiceIds(parsed.services);
 		return true;
 	}
 
@@ -1179,6 +1272,36 @@
 		return auraList.some((x) => x.title.toLowerCase() === title);
 	}
 
+	function itemMatchPercent(item: Rec): number {
+		return matchPercent({
+			itemGenres: itemGenres(item),
+			userGenres: selectedGenres,
+			pitch: item.pitch,
+			notes: vibePrompt,
+			notesWeight
+		});
+	}
+
+	function markSeen(item: Rec) {
+		ignoredList = upsertLocalTitle(ignoredList, toLocalTitle(item));
+		saveIgnoredList(ignoredList);
+	}
+
+	function toggleWatchlistItem(item: Rec) {
+		watchlist = toggleLocalTitle(watchlist, toLocalTitle(item));
+		saveWatchlist(watchlist);
+	}
+
+	function removeWatchlistItem(id: string) {
+		watchlist = removeLocalTitle(watchlist, id);
+		saveWatchlist(watchlist);
+	}
+
+	function restoreIgnored(id: string) {
+		ignoredList = removeLocalTitle(ignoredList, id);
+		saveIgnoredList(ignoredList);
+	}
+
 	function playlistShareUrl(slug: string) {
 		return `${page.url.origin}/list/${slug}`;
 	}
@@ -1197,6 +1320,12 @@
 		if (!page.data.session?.user) {
 			auraList = loadAuraList();
 		}
+
+		ignoredList = loadIgnoredList();
+		watchlist = loadWatchlist();
+		myServices = loadMyServices();
+		recentVibes = loadRecentVibes();
+		tonightSky = clockOnlySky();
 
 		try {
 			const saved = localStorage.getItem(REGION_KEY);
@@ -1390,7 +1519,9 @@
 					maturity: selectedMaturity || undefined,
 					priceRange: selectedPriceRange || undefined,
 					platforms: selectedPlatforms.length ? selectedPlatforms : undefined,
-					seriesLength: selectedSeasonCount || undefined
+					seriesLength: selectedSeasonCount || undefined,
+					runtime: selectedRuntime || undefined,
+					services: myServices.length ? myServices : undefined
 				})
 			});
 
@@ -1413,6 +1544,13 @@
 			results = list.map((raw: Record<string, any>) => normalizeRec(raw));
 			vibeMissed = results.length === 0;
 			fabSaveIndex = 0;
+			if (results.length) {
+				recentVibes = pushRecentVibe(recentVibes, {
+					vibe: vibePrompt,
+					types: selectedTypes,
+					genres: selectedGenres
+				});
+			}
 			syncVibeUrl();
 		} catch (err: any) {
 			console.log('oops', err);
@@ -1434,6 +1572,7 @@
 		selectedPriceRange = '';
 		selectedPlatforms = [];
 		selectedSeasonCount = '';
+		selectedRuntime = '';
 		notesWeight = NOTES_WEIGHT_DEFAULT;
 		vibeMissed = false;
 		results = [];
@@ -1473,7 +1612,77 @@
 		selectedPlatforms = [];
 		selectedSeasonCount = roll.seriesLength || '';
 		selectedDecade = roll.decade || '';
+		// surprise wipes the other filters, so the clock gets set either way instead of sticking
+		selectedRuntime = tonightSky?.preferShort ? '90' : '';
 		await findMyVibe();
+	}
+
+	async function surpriseFromSky() {
+		const sky = await readTonightSky();
+		tonightSky = sky;
+		if (boardGamesSoon || robloxSoon) {
+			await surpriseMe();
+			return;
+		}
+		const roll = rollSurpriseMe(selectedTypes);
+		viewMode = 'match';
+		mobilePane = 'match';
+		vibePrompt = `${sky.vibe}. ${roll.vibe}`;
+		selectedGenres = roll.genres ? [...roll.genres] : [];
+		likeTitles = [];
+		selectedMaturity = roll.maturity || '';
+		selectedPriceRange = roll.priceRange || '';
+		selectedPlatforms = [];
+		selectedSeasonCount = roll.seriesLength || '';
+		selectedDecade = roll.decade || '';
+		selectedRuntime = sky.preferShort ? '90' : '';
+		showShareToast(`[SKY]: ${skyHeadline(sky)}`);
+		await findMyVibe();
+	}
+
+	function toggleMyService(id: string) {
+		myServices = myServices.includes(id)
+			? myServices.filter((x) => x !== id)
+			: [...myServices, id];
+		saveMyServices(myServices);
+	}
+
+	function restoreRecent(entry: RecentVibe) {
+		vibePrompt = entry.vibe;
+		if (entry.types.length) {
+			selectedTypes = entry.types.filter(
+				(t): t is FormatId =>
+					t === 'fullvibe' || FORMAT_OPTIONS.some((f) => f.id === t)
+			) as FormatId[];
+		}
+		selectedGenres = [...entry.genres];
+		void findMyVibe();
+	}
+
+	async function notThis(item: Rec, steer: NotThisSteer) {
+		markSeen(item);
+		const next = applyNotThis({
+			title: item.title,
+			genres: itemGenres(item),
+			prompt: vibePrompt,
+			antiVibe,
+			steer
+		});
+		vibePrompt = next.prompt;
+		antiVibe = next.antiVibe;
+		if (steer === 'shorter') selectedRuntime = selectedRuntime || '90';
+		showShareToast(`[BOUNCE]: not ${item.title} — ${steer}`);
+		await findMyVibe();
+	}
+
+	function itemWhyChips(item: Rec): string[] {
+		return matchWhyChips({
+			itemGenres: itemGenres(item),
+			userGenres: selectedGenres,
+			pitch: item.pitch,
+			notes: vibePrompt,
+			likeTitles
+		});
 	}
 
 	async function toggleSave(item: Rec) {
@@ -1640,9 +1849,10 @@
 	}
 
 	let fabItem = $derived.by(() => {
-		if (!results.length) return null;
-		const i = Math.min(Math.max(fabSaveIndex, 0), results.length - 1);
-		return results[i] || results[0] || null;
+		const pool = visibleResults.length ? visibleResults : results;
+		if (!pool.length) return null;
+		const i = Math.min(Math.max(fabSaveIndex, 0), pool.length - 1);
+		return pool[i] || pool[0] || null;
 	});
 
 	let fabIsSaved = $derived.by(() => {
@@ -1915,6 +2125,66 @@
 			></textarea>
 		</div>
 
+		<div class="field tonight-pack">
+			<span class="field-label" id="runtime-label">Tonight clock</span>
+			<div class="segment price-segment" role="group" aria-labelledby="runtime-label">
+				{#each RUNTIME_OPTIONS as opt (opt.id || 'any-len')}
+					<button
+						type="button"
+						class="segment-btn maturity-btn"
+						class:active={selectedRuntime === opt.id}
+						aria-pressed={selectedRuntime === opt.id}
+						aria-label="{opt.label}, {opt.hint}"
+						onclick={() => (selectedRuntime = opt.id)}
+						disabled={isLoading}
+					>
+						<span class="maturity-label">{opt.label}</span>
+						<span class="maturity-certs">{opt.hint}</span>
+					</button>
+				{/each}
+			</div>
+			<p class="field-hint">Hard cap for movies. TV still uses series length.</p>
+		</div>
+
+		{#if isMediaLane}
+			<div class="field">
+				<span class="field-label" id="services-label">On my apps</span>
+				<div class="service-pins" role="group" aria-labelledby="services-label">
+					{#each STREAM_SERVICES as svc (svc.id)}
+						<button
+							type="button"
+							class="era-chip service-pin"
+							class:active={myServices.includes(svc.id)}
+							aria-pressed={myServices.includes(svc.id)}
+							onclick={() => toggleMyService(svc.id)}
+							disabled={isLoading}
+						>
+							{svc.label}
+						</button>
+					{/each}
+				</div>
+				<p class="field-hint">Hide anything you can’t open in two clicks. Unknown titles stay.</p>
+			</div>
+		{/if}
+
+		{#if recentVibes.length}
+			<div class="field">
+				<span class="field-label">Recent vibes</span>
+				<div class="service-pins">
+					{#each recentVibes as rv (rv.id)}
+						<button
+							type="button"
+							class="era-chip"
+							onclick={() => restoreRecent(rv)}
+							disabled={isLoading}
+						>
+							{rv.label}
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		<button
 			type="button"
 			class="advanced-toggle"
@@ -2097,12 +2367,72 @@
 			>
 				{uiTheme === 'minimal' ? 'Surprise me' : 'surprise me'}
 			</button>
+			<button
+				type="button"
+				class="cta cta-surprise cta-sky"
+				disabled={isLoading || boardGamesSoon || robloxSoon}
+				onclick={() => void surpriseFromSky()}
+			>
+				{uiTheme === 'minimal' ? 'Match the sky' : 'match the sky'}
+			</button>
 		</div>
 	</form>
 
 	{#if errMsg}
 		<p class="err" transition:fade={{ duration: 200 }}>{errMsg}</p>
 	{/if}
+{/snippet}
+
+{#snippet cardQuickActions(item: Rec)}
+	{@const pct = itemMatchPercent(item)}
+	{@const tone = matchTone(pct)}
+	{@const bookmarked = isOnLocalList(watchlist, recLocalId(item))}
+	{@const why = itemWhyChips(item)}
+	<div class="card-quick-actions">
+		<span class="match-pct match-{tone}">{pct}% Match</span>
+		<button
+			type="button"
+			class="card-icon-btn"
+			class:on={bookmarked}
+			aria-label={bookmarked ? 'Remove from Watchlist' : 'Add to Watchlist'}
+			aria-pressed={bookmarked}
+			onclick={() => toggleWatchlistItem(item)}
+		>
+			<svg viewBox="0 0 24 24" width="15" height="15" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" aria-hidden="true">
+				<path d="M6 4h12v16l-6-4-6 4V4z" />
+			</svg>
+		</button>
+		<button
+			type="button"
+			class="card-icon-btn"
+			aria-label="Seen It — hide this pick"
+			onclick={() => markSeen(item)}
+		>
+			<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+				<path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+	</div>
+	{#if why.length}
+		<div class="why-chips">
+			{#each why as chip (chip)}
+				<span class="why-chip">{chip}</span>
+			{/each}
+		</div>
+	{/if}
+	<div class="not-this-row">
+		<span class="not-this-label">Not this</span>
+		{#each NOT_THIS_STEERS as steer (steer.id)}
+			<button
+				type="button"
+				class="era-chip not-this-btn"
+				disabled={isLoading}
+				onclick={() => void notThis(item, steer.id)}
+			>
+				{steer.label}
+			</button>
+		{/each}
+	</div>
 {/snippet}
 
 {#snippet resultContent()}
@@ -2239,14 +2569,25 @@
 			</div>
 		{/if}
 		<div
-			class="rec-list"
+			class="rec-results"
 			class:rec-list-dimmed={isLoading}
 			in:fly={{ y: uiTheme === 'desktop' ? 0 : 10, duration: uiTheme === 'desktop' ? 0 : 320, easing: quintOut }}
 			out:fade={{ duration: 140 }}
 		>
+			{#if tonightSky}
+				<p class="tonight-hud">{skyHeadline(tonightSky)}</p>
+			{/if}
 			<div class="rec-list-toolbar">
-				<p class="rec-list-header">{results.length} picks</p>
+				<p class="rec-list-header">{visibleResults.length} of {results.length} picks</p>
 				<div class="rec-list-actions">
+					<button
+						type="button"
+						class="share-vibe-btn"
+						onclick={() => (listsDrawer = true)}
+						disabled={isLoading}
+					>
+						Watchlist ({watchlist.length})
+					</button>
 					{#if session?.user && letterboxdExportable}
 						<button
 							type="button"
@@ -2267,7 +2608,26 @@
 					</button>
 				</div>
 			</div>
-			{#each results as item, i (item.title + String(i))}
+			<div class="era-filter" role="group" aria-label="Filter by era">
+				{#each RESULT_ERA_OPTIONS as opt (opt.id)}
+					<button
+						type="button"
+						class="era-chip"
+						class:active={resultEra === opt.id}
+						aria-pressed={resultEra === opt.id}
+						onclick={() => (resultEra = opt.id)}
+					>
+						{opt.label}
+					</button>
+				{/each}
+			</div>
+			{#if visibleResults.length}
+			<!-- converting cards into a clean multi-column responsive grid with decade filters -->
+			<div
+				class="rec-list grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 max-w-7xl mx-auto px-4"
+			>
+			{#each visibleResults as item, visI (recLocalId(item))}
+				{@const i = results.indexOf(item)}
 				{@const genres = itemGenres(item)}
 				{@const meta = itemMetaLine(item)}
 				{@const song = isSongRec(item)}
@@ -2281,14 +2641,15 @@
 				<article
 					class="rec-card"
 					class:vibe-package={vibe}
-					{@attach uiTheme === 'desktop' && desktopCardEntrance(i)}
-					onpointerenter={() => (fabSaveIndex = i)}
-					onfocusin={() => (fabSaveIndex = i)}
+					{@attach uiTheme === 'desktop' && desktopCardEntrance(visI)}
+					onpointerenter={() => (fabSaveIndex = visI)}
+					onfocusin={() => (fabSaveIndex = visI)}
 				>
 					{#if vibe && item.watch && item.music && item.snack}
 						<!-- cohesive night-in package card -->
 						<div class="vibe-pack">
 							<div class="vibe-pack-head">
+								{@render cardQuickActions(item)}
 								<p class="rec-label">{likeLabel(item)}</p>
 								<div class="rec-title-row">
 									<h2 class="rec-title">{item.vibeLabel || item.title}</h2>
@@ -2299,7 +2660,7 @@
 										aria-label={saved ? 'Remove from My List' : 'Save to My List'}
 										aria-pressed={saved}
 										onclick={() => {
-											fabSaveIndex = i;
+											fabSaveIndex = visI;
 											toggleSave(item);
 										}}
 									>
@@ -2414,6 +2775,7 @@
 						</div>
 
 						<div class="rec-copy">
+							{@render cardQuickActions(item)}
 							<p class="rec-label">{likeLabel(item)}</p>
 							<div class="rec-title-row">
 								<h2 class="rec-title">{item.title}</h2>
@@ -2433,7 +2795,7 @@
 									aria-label={saved ? 'Remove from My List' : 'Save to My List'}
 									aria-pressed={saved}
 									onclick={() => {
-										fabSaveIndex = i;
+										fabSaveIndex = visI;
 										toggleSave(item);
 									}}
 								>
@@ -2663,6 +3025,20 @@
 					{/if}
 				</article>
 			{/each}
+			</div>
+			{:else}
+				<p class="empty-state era-empty">
+					{#if selectedRuntime}
+						Nothing on the pile fits that clock — try Any length.
+					{:else if myServices.length}
+						None of these are on your apps — unpin a service or run it again.
+					{:else if resultEra !== 'all'}
+						Nothing in this era on the current pile — try All Time, or restore a dismissed title.
+					{:else}
+						These are all hidden. Open Watchlist → Hidden to restore a title.
+					{/if}
+				</p>
+			{/if}
 		</div>
 	{:else if boardGamesSoon}
 		<!-- placeholder state for board games until the token goes live -->
@@ -2744,14 +3120,23 @@
 		<button
 			type="button"
 			class="view-tab-btn"
-			class:active={viewMode === 'match'}
-			aria-pressed={viewMode === 'match'}
+			class:active={viewMode === 'match' && !listsDrawer}
+			aria-pressed={viewMode === 'match' && !listsDrawer}
 			onclick={() => {
 				viewMode = 'match';
 				mobilePane = 'match';
 			}}
 		>
 			Match
+		</button>
+		<button
+			type="button"
+			class="view-tab-btn"
+			class:active={listsDrawer}
+			aria-pressed={listsDrawer}
+			onclick={() => (listsDrawer = true)}
+		>
+			Watchlist ({watchlist.length})
 		</button>
 		<a
 			class="view-tab-btn"
@@ -2887,7 +3272,7 @@
 	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="min-top flex flex-wrap">
-			<h1 class="min-brand">AuraWatch</h1>
+			<h1 class="min-brand">AuraWatch <span class="app-version">v{SITE.version}</span></h1>
 			<div class="header-controls flex flex-wrap">
 				{@render viewTabs()}
 				{@render themeSwitcher()}
@@ -2923,7 +3308,7 @@
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="menubar flex flex-wrap">
 			<div class="menubar-left">
-				<span class="menu-brand">AuraWatch</span>
+				<span class="menu-brand">AuraWatch <span class="app-version">v{SITE.version}</span></span>
 			</div>
 			<div class="menubar-right flex flex-wrap">
 				{@render viewTabs()}
@@ -2988,6 +3373,17 @@
 {/if}
 
 {@render mobileBottomNav()}
+
+<ListsDrawer
+	open={listsDrawer}
+	variant={uiTheme}
+	deskDark={deskMode === 'dark'}
+	{watchlist}
+	{ignoredList}
+	onClose={() => (listsDrawer = false)}
+	onRemoveWatch={removeWatchlistItem}
+	onRestore={restoreIgnored}
+/>
 
 {#if shareToast}
 	<!-- dropping a retro terminal toast notification so users actually know when their link was copied -->
@@ -3647,6 +4043,13 @@
 		font-weight: 700;
 		color: var(--ink);
 		white-space: nowrap;
+	}
+	.desktop .app-version {
+		font-weight: 600;
+		font-size: 0.72em;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+		margin-left: 0.35rem;
 	}
 
 	.desktop .menu-clock {
@@ -4480,6 +4883,9 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+	.desktop .cta-sky {
+		letter-spacing: 0.02em;
+	}
 	.desktop .save-btn {
 		appearance: none;
 		margin-left: auto;
@@ -4567,19 +4973,144 @@
 		}
 	}
 
-	.desktop .rec-list {
+	.desktop .rec-results {
 		display: flex;
 		flex-direction: column;
 		width: 100%;
-		gap: 0;
+		gap: 0.55rem;
+	}
+
+	.desktop .rec-list {
+		display: grid;
+		width: 100%;
+		max-width: 80rem;
+		margin-inline: auto;
+	}
+	@media (min-width: 1024px) {
+		.desktop .rec-list {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 
 	.desktop .rec-list-toolbar {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 0.75rem;
 		margin: 0 0 0.35rem;
+	}
+
+	.desktop .era-filter {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.desktop .era-chip {
+		appearance: none;
+		border: 1.5px solid var(--line);
+		background: var(--panel);
+		color: var(--ink);
+		cursor: pointer;
+		padding: 0.28rem 0.55rem;
+		font: inherit;
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	.desktop .era-chip.active {
+		background: var(--accent);
+		color: var(--on-accent);
+		border-color: var(--accent);
+	}
+	.desktop .service-pins {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.desktop .tonight-hud {
+		margin: 0 0 0.35rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.desktop .why-chips,
+	.desktop .not-this-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.3rem;
+		margin: 0 0 0.45rem;
+	}
+	.desktop .why-chip {
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		padding: 0.15rem 0.4rem;
+		border: 1.5px solid var(--line);
+		color: var(--ink);
+	}
+	.desktop .not-this-label {
+		font-size: 0.62rem;
+		font-weight: 800;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+
+	.desktop .card-quick-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin: 0 0 0.4rem;
+	}
+	.desktop .match-pct {
+		margin-right: auto;
+		font-size: 0.72rem;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.desktop .match-pct.match-high {
+		color: #16a34a;
+	}
+	.desktop .match-pct.match-mid {
+		color: #ca8a04;
+	}
+	.desktop .match-pct.match-low {
+		color: var(--muted);
+	}
+	.desktop.desk-dark .match-pct.match-high {
+		color: #4ade80;
+	}
+	.desktop.desk-dark .match-pct.match-mid {
+		color: #fbbf24;
+	}
+	.desktop .card-icon-btn {
+		appearance: none;
+		width: 2rem;
+		height: 2rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1.5px solid var(--line);
+		background: var(--panel);
+		color: var(--ink);
+		cursor: pointer;
+		flex-shrink: 0;
+		padding: 0;
+	}
+	.desktop .card-icon-btn:hover {
+		border-color: var(--accent);
+	}
+	.desktop .card-icon-btn.on {
+		background: var(--accent);
+		color: var(--on-accent);
+		border-color: var(--accent);
 	}
 
 	.desktop .rec-list-actions {
@@ -4625,10 +5156,13 @@
 	}
 
 	.desktop .rec-card {
-		padding: 1rem 0;
+		padding: 0.75rem;
+		border: 2px solid var(--line);
+		background: var(--window);
+		min-width: 0;
 	}
-	.desktop .rec-card + .rec-card {
-		border-top: 2px solid var(--line);
+	.desktop .rec-card.vibe-package {
+		grid-column: 1 / -1;
 	}
 
 	.desktop .empty-state {
@@ -4791,6 +5325,17 @@
 		.desktop .rec-grid {
 			grid-template-columns: 1fr;
 		}
+	}
+
+	.desktop .rec-list .rec-grid {
+		grid-template-columns: 1fr;
+		gap: 0.75rem;
+	}
+	.desktop .rec-list .cover-wrap {
+		width: 100%;
+	}
+	.desktop .rec-list .rec-title {
+		font-size: 1.05rem;
 	}
 
 	.desktop .cover-wrap {
@@ -5196,6 +5741,14 @@
 		color: var(--ink);
 		animation: brand-in 0.45s ease-out both;
 	}
+	.minimal .app-version {
+		font-weight: 600;
+		font-size: 0.35em;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		vertical-align: middle;
+		margin-left: 0.35rem;
+	}
 
 	.minimal .min-headline {
 		margin: 0 0 2rem;
@@ -5289,19 +5842,137 @@
 		}
 	}
 
-	.minimal .rec-list {
+	.minimal .rec-results {
 		display: flex;
 		flex-direction: column;
 		width: 100%;
-		gap: 0;
+		gap: 0.6rem;
+	}
+
+	.minimal .rec-list {
+		display: grid;
+		width: 100%;
+		max-width: 80rem;
+		margin-inline: auto;
+	}
+	@media (min-width: 1024px) {
+		.minimal .rec-list {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 
 	.minimal .rec-list-toolbar {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 0.75rem;
 		margin: 0 0 0.4rem;
+	}
+
+	.minimal .era-filter {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.minimal .era-chip {
+		appearance: none;
+		border: 1px solid rgba(160, 140, 240, 0.4);
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--ink);
+		cursor: pointer;
+		border-radius: 999px;
+		padding: 0.3rem 0.7rem;
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+	}
+	.minimal .era-chip.active {
+		background: rgba(160, 140, 240, 0.28);
+		border-color: rgba(160, 140, 240, 0.85);
+		color: #c4b5fd;
+	}
+	.minimal .service-pins {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.minimal .tonight-hud {
+		margin: 0 0 0.4rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.minimal .why-chips,
+	.minimal .not-this-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem;
+		margin: 0 0 0.5rem;
+	}
+	.minimal .why-chip {
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		padding: 0.18rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid rgba(160, 140, 240, 0.4);
+		color: #c4b5fd;
+	}
+	.minimal .not-this-label {
+		font-size: 0.65rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+
+	.minimal .card-quick-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0 0 0.45rem;
+	}
+	.minimal .match-pct {
+		margin-right: auto;
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.minimal .match-pct.match-high {
+		color: #4ade80;
+	}
+	.minimal .match-pct.match-mid {
+		color: #fbbf24;
+	}
+	.minimal .match-pct.match-low {
+		color: var(--muted);
+	}
+	.minimal .card-icon-btn {
+		appearance: none;
+		width: 2.15rem;
+		height: 2.15rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid rgba(160, 140, 240, 0.45);
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--ink);
+		cursor: pointer;
+		border-radius: 8px;
+		flex-shrink: 0;
+		padding: 0;
+	}
+	.minimal .card-icon-btn.on {
+		background: rgba(160, 140, 240, 0.28);
+		border-color: rgba(160, 140, 240, 0.85);
+		color: #c4b5fd;
 	}
 
 	.minimal .rec-list-actions {
@@ -5342,10 +6013,14 @@
 	}
 
 	.minimal .rec-card {
-		padding: 1.15rem 0;
+		padding: 0.9rem;
+		border: 1px solid var(--line);
+		border-radius: 12px;
+		background: rgba(255, 255, 255, 0.03);
+		min-width: 0;
 	}
-	.minimal .rec-card + .rec-card {
-		border-top: 1px solid var(--line);
+	.minimal .rec-card.vibe-package {
+		grid-column: 1 / -1;
 	}
 
 	.minimal .vibe-form {
@@ -6212,6 +6887,17 @@
 		.minimal .rec-grid {
 			grid-template-columns: 1fr;
 		}
+	}
+
+	.minimal .rec-list .rec-grid {
+		grid-template-columns: 1fr;
+		gap: 0.75rem;
+	}
+	.minimal .rec-list .cover-wrap {
+		width: 100%;
+	}
+	.minimal .rec-list .rec-title {
+		font-size: 1.1rem;
 	}
 
 	.minimal .cover-wrap {

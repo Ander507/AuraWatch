@@ -17,6 +17,40 @@ function withKey(url: string, apiKey: string, useBearer: boolean) {
 	return `${url}${join}api_key=${apiKey}`;
 }
 
+/** Movie runtime or typical TV episode length in minutes. */
+export async function fetchTmdbRuntimeMinutes(
+	tmdbId: number,
+	mediaType: 'movie' | 'tv',
+	language?: string | null
+): Promise<number | null> {
+	const { apiKey, useBearer, headers } = authHeaders();
+	if (!apiKey || !tmdbId) return null;
+
+	const lang = String(language || '').trim() || 'en-US';
+	const path = mediaType === 'tv' ? `tv/${tmdbId}` : `movie/${tmdbId}`;
+	const url = withKey(
+		`https://api.themoviedb.org/3/${path}?language=${encodeURIComponent(lang)}`,
+		apiKey,
+		useBearer
+	);
+
+	try {
+		const res = await cachedJsonFetch(url, { headers }, { ttlMs: 24 * 60 * 60 * 1000 });
+		if (!res.ok || !res.data) return null;
+		if (mediaType === 'movie') {
+			const n = res.data.runtime;
+			if (typeof n === 'number' && n > 0) return n;
+			return null;
+		}
+		const eps = res.data.episode_run_time;
+		if (Array.isArray(eps) && typeof eps[0] === 'number' && eps[0] > 0) return eps[0];
+		return null;
+	} catch (e) {
+		console.warn('tmdb runtime fail', tmdbId, e);
+		return null;
+	}
+}
+
 /** Fetch number_of_seasons for a TMDB TV id. */
 export async function fetchTvSeasonCount(
 	tmdbId: number,

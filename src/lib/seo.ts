@@ -1,6 +1,7 @@
 /** Site SEO defaults — geared at “can’t find what to watch” discovery */
 export const SITE = {
 	name: 'AuraWatch',
+	version: '0.3.0',
 	url: 'https://aurawatch.org',
 	title: 'AuraWatch — Can’t Decide What to Watch? Get One Perfect Pick',
 	description:
