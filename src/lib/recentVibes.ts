@@ -6,6 +6,11 @@ export type RecentVibe = {
 	vibe: string;
 	types: string[];
 	genres: string[];
+	runtime?: string;
+	services?: string[];
+	likes?: string[];
+	antiVibe?: string;
+	decade?: string;
 	savedAt: number;
 };
 
@@ -26,6 +31,11 @@ export function loadRecentVibes(): RecentVibe[] {
 				vibe: String(x.vibe || ''),
 				types: Array.isArray(x.types) ? x.types.map(String) : [],
 				genres: Array.isArray(x.genres) ? x.genres.map(String) : [],
+				runtime: typeof x.runtime === 'string' ? x.runtime : undefined,
+				services: Array.isArray(x.services) ? x.services.map(String) : undefined,
+				likes: Array.isArray(x.likes) ? x.likes.map(String) : undefined,
+				antiVibe: typeof x.antiVibe === 'string' ? x.antiVibe : undefined,
+				decade: typeof x.decade === 'string' ? x.decade : undefined,
 				savedAt: typeof x.savedAt === 'number' ? x.savedAt : Date.now()
 			}))
 			.slice(0, MAX);
@@ -44,13 +54,18 @@ export function pushRecentVibe(
 		0,
 		42
 	);
-	const id = `${vibe}|${entry.types.join(',')}|${entry.genres.join(',')}`.toLowerCase();
+	const id = `${vibe}|${entry.types.join(',')}|${entry.genres.join(',')}|${entry.runtime || ''}|${(entry.services || []).join(',')}`.toLowerCase();
 	const next: RecentVibe = {
 		id,
 		label,
 		vibe,
 		types: entry.types,
 		genres: entry.genres,
+		runtime: entry.runtime,
+		services: entry.services,
+		likes: entry.likes,
+		antiVibe: entry.antiVibe,
+		decade: entry.decade,
 		savedAt: Date.now()
 	};
 	const rest = list.filter((x) => x.id !== id);

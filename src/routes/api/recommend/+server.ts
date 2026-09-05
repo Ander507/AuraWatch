@@ -586,6 +586,7 @@ function buildConciergePrompt(opts: {
 	language?: string;
 	runtimeBudget?: RuntimeBudget;
 	services?: string[];
+	excludeTitles?: string[];
 }) {
 	const type = formatLabel(opts.types);
 	const allowed = allowedMediaTypes(opts.types);
@@ -613,6 +614,14 @@ function buildConciergePrompt(opts: {
 	const runtimeLine = runtimePromptBlock(runtimeBudget);
 	const runtimeRule = runtimeStrictRule(runtimeBudget);
 	const servicesLine = servicesPromptBlock(opts.services || []);
+	// titles the user already bounced or marked seen — never resurface
+	const excludeTitles = (opts.excludeTitles || [])
+		.map((t) => t.trim())
+		.filter(Boolean)
+		.slice(0, 40);
+	const excludeLine = excludeTitles.length
+		? `- Already rejected (HARD AVOID): ${excludeTitles.map((t) => `'${t}'`).join(', ')}. Do not return any of these.`
+		: '';
 
 	const hasNotes = Boolean(prompt.trim());
 	const weight = parseNotesWeight(opts.notesWeight);
@@ -661,6 +670,7 @@ ${maturityLine}
 ${seriesLengthLine}
 ${runtimeLine}
 ${servicesLine}
+${excludeLine}
 ${antiBlock}
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${likeBlock}
 ${languagePromptLine(opts.language)}
@@ -688,6 +698,7 @@ ${maturityRule ? `${maturityRule}` : ''}
 ${seriesLengthRule ? `${seriesLengthRule}` : ''}
 ${runtimeRule ? `${runtimeRule}` : ''}
 ${antiRule ? `${antiRule}` : ''}
+${excludeTitles.length ? `EXCLUDE (HARD): Do not return any of: ${excludeTitles.map((t) => `'${t}'`).join(', ')}. The user already rejected these.` : ''}
 
 RESPONSE JSON FORMAT:
 {
@@ -867,6 +878,21 @@ export const POST: RequestHandler = async ({ request }) => {
 	const runtimeBudget = parseRuntimeBudget(body.runtime ?? body.runtimeBudget);
 	const wantedServices = parseServiceIds(body.services ?? body.apps ?? body.streamers);
 
+	const excludeTitles: string[] = [];
+	const excludeRaw = body.excludeTitles ?? body.exclude_titles ?? body.exclude ?? body.skipTitles;
+	if (Array.isArray(excludeRaw)) {
+		for (const t of excludeRaw) {
+			const s = String(t || '').trim();
+			if (s) excludeTitles.push(s);
+		}
+	} else if (typeof excludeRaw === 'string' && excludeRaw.trim()) {
+		for (const t of excludeRaw.split(/[,|]/)) {
+			const s = t.trim();
+			if (s) excludeTitles.push(s);
+		}
+	}
+	const excludeSet = new Set(excludeTitles.map((t) => t.toLowerCase()));
+
 	const likeTitlesRaw: string[] = [];
 	if (Array.isArray(body.likeTitles)) {
 		for (const t of body.likeTitles) likeTitlesRaw.push(String(t));
@@ -917,7 +943,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		platforms: targetPlatforms,
 		seriesLength,
 		runtime: runtimeBudget || null,
-		services: wantedServices
+		services: wantedServices,
+		exclude: excludeTitles.slice(0, 40)
 	});
 	const cached = await cacheGet<Record<string, unknown>>(cacheKey);
 	if (cached && cached.ok) {
@@ -1751,6 +1778,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				if (picks.length) {
 					const recommendations = [];
 					for (const { similar, certification } of picks) {
+						if (excludeSet.has(similar.title.toLowerCase())) continue;
 						const seasons = await resolveTvSeasons(
 							similar.id,
 							similar.mediaType,
@@ -1866,7 +1894,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				antiVibe,
 				language,
 				runtimeBudget,
-				services: wantedServices
+				services: wantedServices,
+				excludeTitles
 			});
 			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 4096 });
 			const parsedRecs = parseGeminiRecs(gemini.text);
@@ -1874,7 +1903,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			const decadeFiltered = decade
 				? parsedRecs.filter((r) => yearInDecade(r.releaseYear, decade))
 				: parsedRecs;
-			const recs = decadeFiltered.length ? decadeFiltered : parsedRecs;
+			const recs = (decadeFiltered.length ? decadeFiltered : parsedRecs).filter(
+				(r) => r?.title && !excludeSet.has(String(r.title).toLowerCase())
+			);
 
 			// Sequential enrich — parallel TMDB fan-out was rate-limiting posters to initials
 			const enriched = [];
@@ -2016,6 +2047,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const catalogEnriched = [];
 	for (const hit of hits) {
+			if (excludeSet.has(hit.title.toLowerCase())) continue;
 			if (seriesLength && hit.seasons > 0 && !seasonCountAllowed(hit.seasons, seriesLength)) {
 				continue;
 			}

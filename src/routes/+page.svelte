@@ -515,7 +515,7 @@
 		const ignored = new Set(ignoredList.map((x) => x.id));
 		// same title twice would blow up the keyed each, so first one wins
 		const seen = new Set<string>();
-		return results.filter((item) => {
+		const matches = results.filter((item) => {
 			const id = recLocalId(item);
 			if (ignored.has(id) || seen.has(id)) return false;
 			const year = parseRecYear(item.seasonInfo, item.title);
@@ -527,13 +527,12 @@
 						? item.playingTime
 						: null;
 			if (!runtimeAllowed(minutes, selectedRuntime)) return false;
-			// songs/games/books reuse `providers` for store + listen links, so the
-			// streaming pins only get a vote on things you actually stream
-			if (isWatchRec(item) && !itemOnMyServices(item.providers, myServices)) return false;
-			if (item.watch && !itemOnMyServices(item.watch.providers, myServices)) return false;
+			// services are a SOFT rank now, not a hard cut — never zero the pile
 			seen.add(id);
 			return true;
 		});
+		// soft rank: on-apps and higher match% float to the top (hero position)
+		return matches.sort(rankVisible);
 	});
 
 	let visibleGenres = $derived.by(() => {
@@ -1287,6 +1286,20 @@
 		saveIgnoredList(ignoredList);
 	}
 
+	// everything the user already rejected — sent to the api so re-rolls stay progressive
+	function excludedTitles(): string[] {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const t of ignoredList) {
+			const k = t.title.toLowerCase();
+			if (k && !seen.has(k)) {
+				seen.add(k);
+				out.push(t.title);
+			}
+		}
+		return out.slice(0, 40);
+	}
+
 	function toggleWatchlistItem(item: Rec) {
 		watchlist = toggleLocalTitle(watchlist, toLocalTitle(item));
 		saveWatchlist(watchlist);
@@ -1521,7 +1534,9 @@
 					platforms: selectedPlatforms.length ? selectedPlatforms : undefined,
 					seriesLength: selectedSeasonCount || undefined,
 					runtime: selectedRuntime || undefined,
-					services: myServices.length ? myServices : undefined
+					services: myServices.length ? myServices : undefined,
+					// never resurface what they already bounced or marked seen
+					excludeTitles: excludedTitles()
 				})
 			});
 
@@ -1548,7 +1563,12 @@
 				recentVibes = pushRecentVibe(recentVibes, {
 					vibe: vibePrompt,
 					types: selectedTypes,
-					genres: selectedGenres
+					genres: selectedGenres,
+					runtime: selectedRuntime || undefined,
+					services: myServices.length ? myServices : undefined,
+					likes: likeTitles.length ? likeTitles : undefined,
+					antiVibe: antiVibe || undefined,
+					decade: selectedDecade || undefined
 				});
 			}
 			syncVibeUrl();
@@ -1656,13 +1676,17 @@
 			) as FormatId[];
 		}
 		selectedGenres = [...entry.genres];
+		if (entry.runtime) selectedRuntime = parseRuntimeBudget(entry.runtime);
+		if (entry.services?.length) myServices = parseServiceIds(entry.services);
+		if (entry.likes?.length) likeTitles = [...entry.likes];
+		if (entry.antiVibe) antiVibe = entry.antiVibe;
+		if (entry.decade) selectedDecade = entry.decade;
 		void findMyVibe();
 	}
 
 	async function notThis(item: Rec, steer: NotThisSteer) {
 		markSeen(item);
-		const next = applyNotThis({
-			title: item.title,
+		const next = applyNotThis({			title: item.title,
 			genres: itemGenres(item),
 			prompt: vibePrompt,
 			antiVibe,
@@ -1675,6 +1699,19 @@
 		await findMyVibe();
 	}
 
+	// anti-paralysis escape hatch: open the best fit's watch link and commit
+	function decideForMe() {
+		const pick = heroItem || visibleResults[0] || results[0];
+		if (!pick) return;
+		const url = heroWatchUrl(pick);
+		if (url) {
+			window.open(url, '_blank', 'noopener,noreferrer');
+			showShareToast(`Tonight: ${pick.title}`);
+		} else {
+			showShareToast(`No stream link for ${pick.title}`);
+		}
+	}
+
 	function itemWhyChips(item: Rec): string[] {
 		return matchWhyChips({
 			itemGenres: itemGenres(item),
@@ -1683,6 +1720,22 @@
 			notes: vibePrompt,
 			likeTitles
 		});
+	}
+
+	// does this pick land on one of the user's pinned streaming apps?
+	function itemOnApps(item: Rec): boolean {
+		if (!myServices.length) return false;
+		if (isWatchRec(item) && itemOnMyServices(item.providers, myServices)) return true;
+		if (item.watch && itemOnMyServices(item.watch.providers, myServices)) return true;
+		return false;
+	}
+
+	// rank: on-apps + higher match% first; keeps the hero pick honest
+	function rankVisible(a: Rec, b: Rec): number {
+		const aApps = itemOnApps(a) ? 1 : 0;
+		const bApps = itemOnApps(b) ? 1 : 0;
+		if (aApps !== bApps) return bApps - aApps;
+		return itemMatchPercent(b) - itemMatchPercent(a);
 	}
 
 	async function toggleSave(item: Rec) {
@@ -1854,6 +1907,27 @@
 		const i = Math.min(Math.max(fabSaveIndex, 0), pool.length - 1);
 		return pool[i] || pool[0] || null;
 	});
+
+	// the one pick AuraWatch is committing to tonight — everything else is "or these"
+	let heroItem = $derived(visibleResults.length ? visibleResults[0] : null);
+	let alternates = $derived(heroItem ? visibleResults.slice(1) : visibleResults);
+
+	function heroWatchUrl(item: Rec): string | null {
+		if (item.watchLink) return item.watchLink;
+		const p = item.providers?.find((x) => x?.url);
+		if (p?.url) return p.url;
+		if (item.watch?.watchLink) return item.watch.watchLink;
+		const wp = item.watch?.providers?.find((x) => x?.url);
+		if (wp?.url) return wp.url;
+		return null;
+	}
+
+	function heroWatchLabel(item: Rec): string {
+		if (isSongRec(item)) return 'Listen now';
+		if (isBookRec(item)) return 'Find it';
+		if (isGameRec(item) || isBoardRec(item) || isRobloxRec(item)) return 'Play it';
+		return 'Watch now';
+	}
 
 	let fabIsSaved = $derived.by(() => {
 		const item = fabItem;
@@ -2413,8 +2487,11 @@
 			</svg>
 		</button>
 	</div>
-	{#if why.length}
+	{#if why.length || itemOnApps(item)}
 		<div class="why-chips">
+			{#if itemOnApps(item)}
+				<span class="why-chip why-chip-apps">On your apps</span>
+			{/if}
 			{#each why as chip (chip)}
 				<span class="why-chip">{chip}</span>
 			{/each}
@@ -2622,11 +2699,68 @@
 				{/each}
 			</div>
 			{#if visibleResults.length}
+			<!-- one pick AuraWatch is committing to — the rest are "or these" -->
+			{#if heroItem}
+				{@const h = heroItem}
+				{@const hPct = itemMatchPercent(h)}
+				{@const hTone = matchTone(hPct)}
+				{@const hUrl = heroWatchUrl(h)}
+				{@const hOnApps = itemOnApps(h)}
+				<section class="hero-pick" transition:fade={{ duration: 200 }}>
+					<div class="hero-poster">
+						{#if showCoverImg(h)}
+							<img src={h.cover} alt="" loading="eager" />
+						{:else}
+							<div class="hero-poster-fallback" style={coverFallbackStyle(h.title)} aria-hidden="true">
+								<span>{mediaInitials(h.title, h.artist)}</span>
+							</div>
+						{/if}
+					</div>
+					<div class="hero-body">
+						<p class="hero-eyebrow">Tonight’s pick</p>
+						<h2 class="hero-title">{h.title}</h2>
+						{#if h.pitch}<p class="hero-pitch">{h.pitch}</p>{/if}
+						<div class="hero-chips">
+							<span class="match-pct match-{hTone}">{hPct}% Match</span>
+							{#if hOnApps}<span class="why-chip why-chip-apps">On your apps</span>{/if}
+							{#each itemWhyChips(h).slice(0, 2) as chip (chip)}
+								<span class="why-chip">{chip}</span>
+							{/each}
+						</div>
+						<div class="hero-actions">
+							{#if hUrl}
+								<a class="hero-cta" href={hUrl} target="_blank" rel="noopener noreferrer">
+									{heroWatchLabel(h)}
+								</a>
+							{:else}
+								<span class="hero-cta hero-cta-muted" aria-disabled="true">No stream link</span>
+							{/if}
+							<button type="button" class="hero-decide" onclick={() => decideForMe()}>
+								Decide for me
+							</button>
+						</div>
+						<div class="hero-notthis">
+							<span class="not-this-label">Not this:</span>
+							{#each NOT_THIS_STEERS as steer (steer.id)}
+								<button
+									type="button"
+									class="not-this-btn"
+									onclick={() => void notThis(h, steer.id)}
+								>{steer.label}</button>
+							{/each}
+						</div>
+					</div>
+				</section>
+			{/if}
+			{#if alternates.length}
+				<p class="alternates-label">or these</p>
+			{/if}
 			<!-- converting cards into a clean multi-column responsive grid with decade filters -->
+			{#if alternates.length}
 			<div
 				class="rec-list grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 max-w-7xl mx-auto px-4"
 			>
-			{#each visibleResults as item, visI (recLocalId(item))}
+			{#each alternates as item, visI (recLocalId(item))}
 				{@const i = results.indexOf(item)}
 				{@const genres = itemGenres(item)}
 				{@const meta = itemMetaLine(item)}
@@ -2681,7 +2815,7 @@
 									{#if item.watch.watchLink || item.watch.providers?.length}
 										<a
 											class="watch-cta"
-											href={item.watch.watchLink || item.watch.providers?.find((p) => p.url)?.url || '#'}
+											href={item.watch.watchLink || item.watch.providers?.find((p) => Boolean(p.url))?.url || '#'}
 											target="_blank"
 											rel="noopener noreferrer">Where to watch</a
 										>
@@ -3026,12 +3160,11 @@
 				</article>
 			{/each}
 			</div>
+			{/if}
 			{:else}
 				<p class="empty-state era-empty">
 					{#if selectedRuntime}
 						Nothing on the pile fits that clock — try Any length.
-					{:else if myServices.length}
-						None of these are on your apps — unpin a service or run it again.
 					{:else if resultEra !== 'all'}
 						Nothing in this era on the current pile — try All Time, or restore a dismissed title.
 					{:else}
@@ -4992,6 +5125,130 @@
 		}
 	}
 
+	/* hero pick — the one decision, everything else is "or these" */
+	.desktop .hero-pick,
+	.minimal .hero-pick {
+		display: grid;
+		grid-template-columns: 160px 1fr;
+		gap: 1.25rem;
+		max-width: 80rem;
+		margin: 0 auto 1rem;
+		padding: 1rem 1.25rem;
+		border: 1.5px solid var(--line, rgba(0,0,0,0.12));
+		border-radius: 18px;
+		background: var(--card, #fff);
+		box-shadow: 0 8px 30px -18px rgba(0,0,0,0.25);
+		align-items: center;
+	}
+	@media (min-width: 640px) {
+		.desktop .hero-pick,
+		.minimal .hero-pick {
+			grid-template-columns: 200px 1fr;
+			gap: 1.75rem;
+		}
+	}
+	.hero-poster img {
+		width: 100%;
+		aspect-ratio: 2 / 3;
+		object-fit: cover;
+		border-radius: 12px;
+		display: block;
+	}
+	.hero-poster-fallback {
+		width: 100%;
+		aspect-ratio: 2 / 3;
+		border-radius: 12px;
+		display: grid;
+		place-items: center;
+		font-size: 2rem;
+		font-weight: 800;
+		color: #fff;
+		background: linear-gradient(135deg, #4338ca, #7c3aed);
+	}
+	.hero-eyebrow {
+		font-size: 0.7rem;
+		font-weight: 800;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: var(--accent, #7c3aed);
+		margin: 0 0 0.25rem;
+	}
+	.hero-title {
+		font-size: 1.5rem;
+		font-weight: 800;
+		line-height: 1.15;
+		margin: 0 0 0.4rem;
+	}
+	.hero-pitch {
+		font-size: 0.95rem;
+		line-height: 1.45;
+		margin: 0 0 0.6rem;
+		color: var(--ink-soft, #444);
+	}
+	.hero-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		margin: 0 0 0.7rem;
+	}
+	.hero-actions {
+		display: flex;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		margin: 0 0 0.6rem;
+	}
+	.hero-cta {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 48px;
+		padding: 0 1.5rem;
+		border-radius: 999px;
+		font-weight: 800;
+		font-size: 1rem;
+		background: var(--accent, #7c3aed);
+		color: #fff;
+		text-decoration: none;
+		border: none;
+		cursor: pointer;
+	}
+	.hero-cta:hover { filter: brightness(1.08); }
+	.hero-cta-muted {
+		background: #d4d4d8;
+		color: #71717a;
+		cursor: not-allowed;
+	}
+	.hero-decide {
+		display: inline-flex;
+		align-items: center;
+		min-height: 48px;
+		padding: 0 1.25rem;
+		border-radius: 999px;
+		font-weight: 700;
+		font-size: 0.95rem;
+		background: transparent;
+		color: var(--ink, #111);
+		border: 1.5px solid var(--line, rgba(0,0,0,0.18));
+		cursor: pointer;
+	}
+	.hero-decide:hover { background: var(--hover, rgba(0,0,0,0.04)); }
+	.hero-notthis {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+	}
+	.alternates-label {
+		max-width: 80rem;
+		margin: 0.5rem auto 0.25rem;
+		padding: 0 1.25rem;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-soft, #888);
+	}
+
 	.desktop .rec-list-toolbar {
 		display: flex;
 		align-items: center;
@@ -5053,6 +5310,11 @@
 		padding: 0.15rem 0.4rem;
 		border: 1.5px solid var(--line);
 		color: var(--ink);
+	}
+	.desktop .why-chip-apps {
+		border-color: var(--accent, #22c55e);
+		color: var(--accent, #22c55e);
+		background: color-mix(in srgb, var(--accent, #22c55e) 12%, transparent);
 	}
 	.desktop .not-this-label {
 		font-size: 0.62rem;
@@ -5923,6 +6185,11 @@
 		border-radius: 999px;
 		border: 1px solid rgba(160, 140, 240, 0.4);
 		color: #c4b5fd;
+	}
+	.minimal .why-chip-apps {
+		border-color: #34d399;
+		color: #34d399;
+		background: rgba(52, 211, 153, 0.12);
 	}
 	.minimal .not-this-label {
 		font-size: 0.65rem;
