@@ -7,7 +7,6 @@
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
 	import { signOutEverywhere } from '$lib/discordSignIn';
-	import { signInQuery } from '$lib/authRedirect';
 	import { getZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
@@ -22,6 +21,7 @@
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import ListsDrawer from '$lib/components/ListsDrawer.svelte';
+	import LoginPrompt from '$lib/components/LoginPrompt.svelte';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 	import { matchPercent, matchTone, matchWhyChips } from '$lib/matchScore';
 	import { RESULT_ERA_OPTIONS, matchesResultEra, parseRecYear, type ResultEra } from '$lib/resultEra';
@@ -59,9 +59,6 @@
 	import { SITE } from '$lib/seo';
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
 	import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
-	import { signInWithDiscord } from '$lib/discordSignIn';
-	import { registerWithEmail, signInWithEmail } from '$lib/emailAuth';
-	import { usernameToAuthEmail } from '$lib/usernameAuth';
 	import {
 		loadAuraList,
 		saveAuraList,
@@ -328,6 +325,7 @@
 	let myServices = $state<string[]>([]);
 	let tonightSky = $state<TonightSky | null>(null);
 	let recentVibes = $state<RecentVibe[]>([]);
+	let pinnedHeroId = $state<string | null>(null);
 	let showAdvanced = $state(false);
 	let isLoading = $state(false);
 	let errMsg = $state('');
@@ -355,10 +353,8 @@
 	// which pick the sticky save fab is aimed at (defaults to first result)
 	let fabSaveIndex = $state(0);
 	let showLoginPrompt = $state(false);
-	// toggling a local state variable so the auth modal switches between sign in and register inline without navigating away
-	let isRegistering = $state(false);
-	let authError = $state('');
-	let authBusy = $state(false);
+	// what to do after a successful popup login (stay on page — no /signin bounce)
+	let authIntent = $state<'lists' | null>(null);
 	let saveBusy = $state(false);
 	// dropdown for picking which playlist to drop the saved item into
 	let savePickerItem = $state<Rec | null>(null);
@@ -366,17 +362,23 @@
 	let playlistBusy = $state(false);
 	let savingListId = $state<string | null>(null);
 
-	function openLoginPrompt() {
-		isRegistering = false;
-		authError = '';
+	function openLoginPrompt(intent: 'lists' | null = null) {
+		authIntent = intent;
 		showLoginPrompt = true;
 	}
 
-	function closeLoginPrompt() {
-		showLoginPrompt = false;
-		isRegistering = false;
-		authError = '';
-		authBusy = false;
+	function goToMyLists() {
+		listsDrawer = false;
+		viewMode = 'list';
+		mobilePane = 'list';
+	}
+
+	function openMyLists() {
+		if (session?.user) {
+			goToMyLists();
+			return;
+		}
+		openLoginPrompt('lists');
 	}
 
 	function portalToBody(node: HTMLElement) {
@@ -386,35 +388,9 @@
 		};
 	}
 
-	async function submitEmailAuth(e: SubmitEvent) {
-		e.preventDefault();
-		const formEl = e.currentTarget as HTMLFormElement;
-		const fd = new FormData(formEl);
-		const username = String(fd.get('username') || '');
-		const email = usernameToAuthEmail(username);
-		const password = String(fd.get('password') || '');
-		const name = String(fd.get('name') || '');
-		authBusy = true;
-		authError = '';
-		try {
-			if (!email || !password) {
-				authError = 'Username and password required';
-				return;
-			}
-			const result = isRegistering
-				? await registerWithEmail({ email, password, name })
-				: await signInWithEmail(email, password);
-			if (!result.ok) {
-				authError = result.error;
-				return;
-			}
-			closeLoginPrompt();
-			await invalidateAll();
-		} catch {
-			authError = 'Couldn’t do that — try again';
-		} finally {
-			authBusy = false;
-		}
+	async function afterLoginSuccess() {
+		if (authIntent === 'lists') goToMyLists();
+		authIntent = null;
 	}
 
 	type CloudPlaylistClient = {
@@ -435,7 +411,6 @@
 	let playlistOverride = $state<CloudPlaylistClient[] | null>(null);
 
 	let session = $derived(page.data.session);
-	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
 	let cloudPlaylists = $derived(
 		(playlistOverride ?? page.data.cloudPlaylists ?? []) as CloudPlaylistClient[]
 	);
@@ -1397,6 +1372,27 @@
 			});
 		}
 
+		// bounce from /lists while logged out, or Discord return after "My lists"
+		try {
+			const params = new URLSearchParams(window.location.search);
+			const wantsAuth = params.get('auth') === 'lists' || params.get('login') === 'lists';
+			const afterLogin = sessionStorage.getItem('aurawatch_after_login');
+			if (afterLogin === 'lists') sessionStorage.removeItem('aurawatch_after_login');
+			if (page.data.session?.user && (wantsAuth || afterLogin === 'lists')) {
+				goToMyLists();
+			} else if (!page.data.session?.user && wantsAuth) {
+				queueMicrotask(() => openLoginPrompt('lists'));
+			}
+			if (wantsAuth) {
+				params.delete('auth');
+				params.delete('login');
+				const q = params.toString();
+				history.replaceState({}, '', q ? `${window.location.pathname}?${q}` : window.location.pathname);
+			}
+		} catch {
+			/* shrug */
+		}
+
 		return () => {
 			clearInterval(id);
 			if (shareToastTimer) clearTimeout(shareToastTimer);
@@ -1559,6 +1555,7 @@
 			results = list.map((raw: Record<string, any>) => normalizeRec(raw));
 			vibeMissed = results.length === 0;
 			fabSaveIndex = 0;
+			pinnedHeroId = null;
 			if (results.length) {
 				recentVibes = pushRecentVibe(recentVibes, {
 					vibe: vibePrompt,
@@ -1909,8 +1906,22 @@
 	});
 
 	// the one pick AuraWatch is committing to tonight — everything else is "or these"
-	let heroItem = $derived(visibleResults.length ? visibleResults[0] : null);
-	let alternates = $derived(heroItem ? visibleResults.slice(1) : visibleResults);
+	let heroItem = $derived.by(() => {
+		if (!visibleResults.length) return null;
+		if (pinnedHeroId) {
+			const hit = visibleResults.find((x) => recLocalId(x) === pinnedHeroId);
+			if (hit) return hit;
+		}
+		return visibleResults[0];
+	});
+	let alternates = $derived(
+		heroItem ? visibleResults.filter((x) => recLocalId(x) !== recLocalId(heroItem!)) : visibleResults
+	);
+
+	function promoteToHero(item: Rec) {
+		pinnedHeroId = recLocalId(item);
+		fabSaveIndex = 0;
+	}
 
 	function heroWatchUrl(item: Rec): string | null {
 		if (item.watchLink) return item.watchLink;
@@ -2199,66 +2210,6 @@
 			></textarea>
 		</div>
 
-		<div class="field tonight-pack">
-			<span class="field-label" id="runtime-label">Tonight clock</span>
-			<div class="segment price-segment" role="group" aria-labelledby="runtime-label">
-				{#each RUNTIME_OPTIONS as opt (opt.id || 'any-len')}
-					<button
-						type="button"
-						class="segment-btn maturity-btn"
-						class:active={selectedRuntime === opt.id}
-						aria-pressed={selectedRuntime === opt.id}
-						aria-label="{opt.label}, {opt.hint}"
-						onclick={() => (selectedRuntime = opt.id)}
-						disabled={isLoading}
-					>
-						<span class="maturity-label">{opt.label}</span>
-						<span class="maturity-certs">{opt.hint}</span>
-					</button>
-				{/each}
-			</div>
-			<p class="field-hint">Hard cap for movies. TV still uses series length.</p>
-		</div>
-
-		{#if isMediaLane}
-			<div class="field">
-				<span class="field-label" id="services-label">On my apps</span>
-				<div class="service-pins" role="group" aria-labelledby="services-label">
-					{#each STREAM_SERVICES as svc (svc.id)}
-						<button
-							type="button"
-							class="era-chip service-pin"
-							class:active={myServices.includes(svc.id)}
-							aria-pressed={myServices.includes(svc.id)}
-							onclick={() => toggleMyService(svc.id)}
-							disabled={isLoading}
-						>
-							{svc.label}
-						</button>
-					{/each}
-				</div>
-				<p class="field-hint">Hide anything you can’t open in two clicks. Unknown titles stay.</p>
-			</div>
-		{/if}
-
-		{#if recentVibes.length}
-			<div class="field">
-				<span class="field-label">Recent vibes</span>
-				<div class="service-pins">
-					{#each recentVibes as rv (rv.id)}
-						<button
-							type="button"
-							class="era-chip"
-							onclick={() => restoreRecent(rv)}
-							disabled={isLoading}
-						>
-							{rv.label}
-						</button>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
 		<button
 			type="button"
 			class="advanced-toggle"
@@ -2280,6 +2231,65 @@
 
 		{#if showAdvanced}
 			<div class="advanced-fields" transition:slide={{ duration: 200 }}>
+				<!-- tonight extras live here so the main form stays skim-friendly -->
+				<div class="field tonight-pack">
+					<span class="field-label" id="runtime-label">Tonight clock</span>
+					<div class="segment price-segment" role="group" aria-labelledby="runtime-label">
+						{#each RUNTIME_OPTIONS as opt (opt.id || 'any-len')}
+							<button
+								type="button"
+								class="segment-btn maturity-btn"
+								class:active={selectedRuntime === opt.id}
+								aria-pressed={selectedRuntime === opt.id}
+								aria-label="{opt.label}, {opt.hint}"
+								onclick={() => (selectedRuntime = opt.id)}
+								disabled={isLoading}
+							>
+								<span class="maturity-label">{opt.label}</span>
+								<span class="maturity-certs">{opt.hint}</span>
+							</button>
+						{/each}
+					</div>
+				</div>
+
+				{#if isMediaLane}
+					<div class="field">
+						<span class="field-label" id="services-label">On my apps</span>
+						<div class="service-pins" role="group" aria-labelledby="services-label">
+							{#each STREAM_SERVICES as svc (svc.id)}
+								<button
+									type="button"
+									class="era-chip service-pin"
+									class:active={myServices.includes(svc.id)}
+									aria-pressed={myServices.includes(svc.id)}
+									onclick={() => toggleMyService(svc.id)}
+									disabled={isLoading}
+								>
+									{svc.label}
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if recentVibes.length}
+					<div class="field">
+						<span class="field-label">Recent vibes</span>
+						<div class="service-pins">
+							{#each recentVibes as rv (rv.id)}
+								<button
+									type="button"
+									class="era-chip"
+									onclick={() => restoreRecent(rv)}
+									disabled={isLoading}
+								>
+									{rv.label}
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
 				<div class="field">
 					<label class="field-label" for="anti-vibe"
 						>Exclude / Anti-vibe <span class="optional">(optional)</span></label
@@ -2457,7 +2467,7 @@
 	{/if}
 {/snippet}
 
-{#snippet cardQuickActions(item: Rec)}
+{#snippet cardQuickActions(item: Rec, compact?: boolean)}
 	{@const pct = itemMatchPercent(item)}
 	{@const tone = matchTone(pct)}
 	{@const bookmarked = isOnLocalList(watchlist, recLocalId(item))}
@@ -2487,29 +2497,31 @@
 			</svg>
 		</button>
 	</div>
-	{#if why.length || itemOnApps(item)}
-		<div class="why-chips">
-			{#if itemOnApps(item)}
-				<span class="why-chip why-chip-apps">On your apps</span>
-			{/if}
-			{#each why as chip (chip)}
-				<span class="why-chip">{chip}</span>
+	{#if !compact}
+		{#if why.length || itemOnApps(item)}
+			<div class="why-chips">
+				{#if itemOnApps(item)}
+					<span class="why-chip why-chip-apps">On your apps</span>
+				{/if}
+				{#each why as chip (chip)}
+					<span class="why-chip">{chip}</span>
+				{/each}
+			</div>
+		{/if}
+		<div class="not-this-row">
+			<span class="not-this-label">Not this</span>
+			{#each NOT_THIS_STEERS as steer (steer.id)}
+				<button
+					type="button"
+					class="era-chip not-this-btn"
+					disabled={isLoading}
+					onclick={() => void notThis(item, steer.id)}
+				>
+					{steer.label}
+				</button>
 			{/each}
 		</div>
 	{/if}
-	<div class="not-this-row">
-		<span class="not-this-label">Not this</span>
-		{#each NOT_THIS_STEERS as steer (steer.id)}
-			<button
-				type="button"
-				class="era-chip not-this-btn"
-				disabled={isLoading}
-				onclick={() => void notThis(item, steer.id)}
-			>
-				{steer.label}
-			</button>
-		{/each}
-	</div>
 {/snippet}
 
 {#snippet resultContent()}
@@ -2651,7 +2663,7 @@
 			in:fly={{ y: uiTheme === 'desktop' ? 0 : 10, duration: uiTheme === 'desktop' ? 0 : 320, easing: quintOut }}
 			out:fade={{ duration: 140 }}
 		>
-			{#if tonightSky}
+			{#if tonightSky?.source === 'weather'}
 				<p class="tonight-hud">{skyHeadline(tonightSky)}</p>
 			{/if}
 			<div class="rec-list-toolbar">
@@ -2732,8 +2744,6 @@
 								<a class="hero-cta" href={hUrl} target="_blank" rel="noopener noreferrer">
 									{heroWatchLabel(h)}
 								</a>
-							{:else}
-								<span class="hero-cta hero-cta-muted" aria-disabled="true">No stream link</span>
 							{/if}
 							<button type="button" class="hero-decide" onclick={() => decideForMe()}>
 								Decide for me
@@ -2773,7 +2783,7 @@
 				{@const priceBadge = game ? priceBadgeLabel(item) : undefined}
 				{@const saved = itemIsSaved(item)}
 				<article
-					class="rec-card"
+					class="rec-card alt-card"
 					class:vibe-package={vibe}
 					{@attach uiTheme === 'desktop' && desktopCardEntrance(visI)}
 					onpointerenter={() => (fabSaveIndex = visI)}
@@ -2783,7 +2793,7 @@
 						<!-- cohesive night-in package card -->
 						<div class="vibe-pack">
 							<div class="vibe-pack-head">
-								{@render cardQuickActions(item)}
+								{@render cardQuickActions(item, true)}
 								<p class="rec-label">{likeLabel(item)}</p>
 								<div class="rec-title-row">
 									<h2 class="rec-title">{item.vibeLabel || item.title}</h2>
@@ -2909,10 +2919,15 @@
 						</div>
 
 						<div class="rec-copy">
-							{@render cardQuickActions(item)}
-							<p class="rec-label">{likeLabel(item)}</p>
+							{@render cardQuickActions(item, true)}
 							<div class="rec-title-row">
-								<h2 class="rec-title">{item.title}</h2>
+								<button
+									type="button"
+									class="rec-title-promote"
+									onclick={() => promoteToHero(item)}
+								>
+									<h2 class="rec-title">{item.title}</h2>
+								</button>
 								{#if item.content_rating && !song}
 									<span class="age-badge" title="Content rating">{item.content_rating}</span>
 								{/if}
@@ -2971,10 +2986,10 @@
 							{/if}
 
 							{#if genres.length}
-								<p class="genre-line">{genres.join(' · ')}</p>
+								<p class="genre-line">{genres.slice(0, 3).join(' · ')}</p>
 							{/if}
 
-							<p class="rec-pitch">{item.pitch}</p>
+							<!-- pitch lives on the hero only — keeps alt cards scannable -->
 
 							{#if song && item.preview_url}
 								<audio
@@ -3242,7 +3257,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
+			<button type="button" class="auth-btn" onclick={() => openLoginPrompt()}>Sign in</button>
 		{/if}
 	</div>
 {/snippet}
@@ -3271,14 +3286,15 @@
 		>
 			Watchlist ({watchlist.length})
 		</button>
-		<a
+		<button
+			type="button"
 			class="view-tab-btn"
 			class:active={viewMode === 'list'}
-			href={resolve('/lists')}
-			data-sveltekit-preload-data="hover"
+			aria-pressed={viewMode === 'list'}
+			onclick={() => openMyLists()}
 		>
 			My lists ({totalSavedCount || auraList.length})
-		</a>
+		</button>
 	</div>
 {/snippet}
 
@@ -3334,12 +3350,12 @@
 			</svg>
 			Match
 		</button>
-		<a
+		<button
+			type="button"
 			class="app-nav-btn"
 			class:active={mobilePane === 'list'}
 			aria-current={mobilePane === 'list' ? 'page' : undefined}
-			href={resolve('/lists')}
-			data-sveltekit-preload-data="hover"
+			onclick={() => openMyLists()}
 		>
 			<svg class="app-nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -3350,7 +3366,7 @@
 				/>
 			</svg>
 			My Lists
-		</a>
+		</button>
 	</nav>
 {/snippet}
 
@@ -3525,113 +3541,11 @@
 	</div>
 {/if}
 
-{#if showLoginPrompt}
-	<!-- centering the auth modal dead-center on the screen using flex items-center justify-center -->
-	<div
-		{@attach portalToBody}
-		class="auth-modal-backdrop login-prompt-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-		class:minimal-backdrop={uiTheme === 'minimal'}
-		role="presentation"
-		onclick={() => closeLoginPrompt()}
-		onkeydown={(e) => {
-			// esc closes the login sheet
-			if (e.key === 'Escape') closeLoginPrompt();
-		}}
-		transition:fade={{ duration: 160 }}
-	>
-		<div
-			class="term-modal mx-auto my-auto h-fit min-h-0 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"
-			class:modal-desktop={uiTheme === 'desktop'}
-			class:modal-desk-dark={uiTheme === 'desktop' && deskMode === 'dark'}
-			class:modal-minimal={uiTheme === 'minimal'}
-			role="dialog"
-			aria-modal="true"
-			aria-labelledby="login-prompt-title"
-			tabindex="0"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => {
-				e.stopPropagation();
-				if (e.key === 'Escape') closeLoginPrompt();
-			}}
-		>
-			{#if uiTheme === 'desktop'}
-				<!-- hiding the fake mac window buttons when we aren't in desktop mode -->
-				<div class="term-titlebar">
-					<div class="traffic" aria-hidden="true">
-						<button
-							type="button"
-							class="dot red"
-							aria-label="Close"
-							onclick={() => closeLoginPrompt()}
-						></button>
-						<span class="dot yellow"></span>
-						<span class="dot green"></span>
-					</div>
-					<span class="titlebar-text">~/AuraWatch — {isRegistering ? 'Register' : 'Sign in'}</span>
-					<span class="titlebar-tag">AUTH</span>
-				</div>
-			{/if}
-			<div class="term-modal-body">
-				<h2 id="login-prompt-title">{isRegistering ? 'Create account' : 'Sign in to save'}</h2>
-				<p>Cloud sync needs a login so you can share your vibe list.</p>
-				<div class="login-prompt-actions">
-					<button
-						type="button"
-						class="term-btn primary discord"
-						onclick={() => void signInWithDiscord()}
-					>
-						Login with Discord
-					</button>
-					<!-- hooking up the email and password submit handlers to the auth client so regular sign-in actually works -->
-					<form class="login-cred-form" onsubmit={submitEmailAuth}>
-						{#if isRegistering}
-							<!-- dynamically rendering the name field and changing button text when creating an account -->
-							<input
-								type="text"
-								name="name"
-								autocomplete="name"
-								placeholder="What should we call you"
-							/>
-						{/if}
-						<input
-							type="text"
-							name="username"
-							required
-							placeholder="Enter your username"
-							autocomplete="username"
-							spellcheck="false"
-						/>
-						<input
-							type="password"
-							name="password"
-							required
-							placeholder="Password"
-							autocomplete={isRegistering ? 'new-password' : 'current-password'}
-							minlength={isRegistering ? 8 : undefined}
-						/>
-						{#if authError}
-							<p class="auth-modal-err" role="alert">{authError}</p>
-						{/if}
-						<button type="submit" class="term-btn primary" disabled={authBusy}>
-							{authBusy ? 'Working…' : isRegistering ? 'CREATE ACCOUNT' : 'SIGN IN'}
-						</button>
-					</form>
-					<button
-						type="button"
-						class="auth-link"
-						onclick={() => {
-							isRegistering = !isRegistering;
-							authError = '';
-						}}
-					>
-						{isRegistering ? 'Already registered? Sign in <-' : 'Need an account? Register ->'}
-					</button>
-					<button type="button" class="term-btn" onclick={() => closeLoginPrompt()}>Not now</button>
-				</div>
-			</div>
-		</div>
-	</div>
-{/if}
+<LoginPrompt
+	bind:open={showLoginPrompt}
+	afterLoginKey={authIntent === 'lists' ? 'lists' : ''}
+	onSuccess={afterLoginSuccess}
+/>
 
 {#if savePickerItem}
 	<!-- centering the save to playlist modal dead-center on the screen so it matches the sign-in modal -->
@@ -3762,7 +3676,7 @@
 	</div>
 {/if}
 
-{#if viewMode === 'match' && results.length && !isLoading && fabItem}
+{#if viewMode === 'match' && results.length && !isLoading && fabItem && !heroItem}
 	<!-- sticky save button - users couldn't find the old one -->
 	<button
 		type="button"
@@ -3933,7 +3847,7 @@
 		text-decoration: none;
 		color: #9ca3af;
 	}
-	a.app-nav-btn.active {
+	:is(a, button).app-nav-btn.active {
 		color: #fff;
 	}
 	.app-nav-icon {
@@ -5125,7 +5039,7 @@
 		}
 	}
 
-	/* hero pick — the one decision, everything else is "or these" */
+	/* hero pick — follows theme (dark card in dark mode, light in light) */
 	.desktop .hero-pick,
 	.minimal .hero-pick {
 		display: grid;
@@ -5134,10 +5048,11 @@
 		max-width: 80rem;
 		margin: 0 auto 1rem;
 		padding: 1rem 1.25rem;
-		border: 1.5px solid var(--line, rgba(0,0,0,0.12));
+		border: 1.5px solid var(--line);
 		border-radius: 18px;
-		background: var(--card, #fff);
-		box-shadow: 0 8px 30px -18px rgba(0,0,0,0.25);
+		background: var(--chrome, var(--panel, var(--window, #fff)));
+		color: var(--ink);
+		box-shadow: 0 8px 30px -18px rgba(0, 0, 0, 0.45);
 		align-items: center;
 	}
 	@media (min-width: 640px) {
@@ -5146,6 +5061,50 @@
 			grid-template-columns: 200px 1fr;
 			gap: 1.75rem;
 		}
+	}
+	.hero-title {
+		font-size: 1.5rem;
+		font-weight: 800;
+		line-height: 1.15;
+		margin: 0 0 0.4rem;
+		color: var(--ink);
+	}
+	.hero-pitch {
+		font-size: 0.95rem;
+		line-height: 1.45;
+		margin: 0 0 0.6rem;
+		color: var(--muted);
+	}
+	.hero-decide {
+		display: inline-flex;
+		align-items: center;
+		min-height: 48px;
+		padding: 0 1.25rem;
+		border-radius: 999px;
+		font-weight: 700;
+		font-size: 0.95rem;
+		background: transparent;
+		color: var(--ink);
+		border: 1.5px solid var(--line);
+		cursor: pointer;
+	}
+	.hero-decide:hover {
+		background: var(--hover);
+	}
+	.hero-eyebrow {
+		font-size: 0.7rem;
+		font-weight: 800;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: var(--accent, #ff4c00);
+		margin: 0 0 0.25rem;
+	}
+	.hero-notthis .not-this-label,
+	.hero-notthis .not-this-btn {
+		color: var(--muted);
+	}
+	.hero-notthis .not-this-btn:hover {
+		color: var(--ink);
 	}
 	.hero-poster img {
 		width: 100%;
@@ -5165,31 +5124,15 @@
 		color: #fff;
 		background: linear-gradient(135deg, #4338ca, #7c3aed);
 	}
-	.hero-eyebrow {
-		font-size: 0.7rem;
-		font-weight: 800;
-		letter-spacing: 0.12em;
-		text-transform: uppercase;
-		color: var(--accent, #7c3aed);
-		margin: 0 0 0.25rem;
-	}
-	.hero-title {
-		font-size: 1.5rem;
-		font-weight: 800;
-		line-height: 1.15;
-		margin: 0 0 0.4rem;
-	}
-	.hero-pitch {
-		font-size: 0.95rem;
-		line-height: 1.45;
-		margin: 0 0 0.6rem;
-		color: var(--ink-soft, #444);
-	}
 	.hero-chips {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem;
 		margin: 0 0 0.7rem;
+	}
+	.hero-chips .why-chip {
+		border-color: var(--line);
+		color: var(--ink);
 	}
 	.hero-actions {
 		display: flex;
@@ -5206,7 +5149,7 @@
 		border-radius: 999px;
 		font-weight: 800;
 		font-size: 1rem;
-		background: var(--accent, #7c3aed);
+		background: var(--accent, #ff4c00);
 		color: #fff;
 		text-decoration: none;
 		border: none;
@@ -5214,29 +5157,65 @@
 	}
 	.hero-cta:hover { filter: brightness(1.08); }
 	.hero-cta-muted {
-		background: #d4d4d8;
-		color: #71717a;
+		background: color-mix(in srgb, var(--muted) 35%, transparent);
+		color: var(--muted);
 		cursor: not-allowed;
 	}
-	.hero-decide {
-		display: inline-flex;
-		align-items: center;
-		min-height: 48px;
-		padding: 0 1.25rem;
-		border-radius: 999px;
-		font-weight: 700;
-		font-size: 0.95rem;
-		background: transparent;
-		color: var(--ink, #111);
-		border: 1.5px solid var(--line, rgba(0,0,0,0.18));
-		cursor: pointer;
-	}
-	.hero-decide:hover { background: var(--hover, rgba(0,0,0,0.04)); }
 	.hero-notthis {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.35rem;
 		flex-wrap: wrap;
+	}
+	.hero-notthis .not-this-btn {
+		appearance: none;
+		background: none;
+		border: none;
+		padding: 0;
+		margin: 0;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 600;
+		cursor: pointer;
+		text-decoration: none;
+	}
+	.hero-notthis .not-this-btn:hover {
+		text-decoration: underline;
+	}
+	.rec-title-promote {
+		appearance: none;
+		background: none;
+		border: none;
+		padding: 0;
+		margin: 0;
+		text-align: left;
+		cursor: pointer;
+		color: inherit;
+		min-width: 0;
+		flex: 1;
+	}
+	.rec-title-promote .rec-title {
+		margin: 0;
+	}
+	.rec-title-promote:hover .rec-title {
+		text-decoration: underline;
+	}
+	/* alt cards: poster + title + match — no essay */
+	.desktop .rec-card.alt-card .where-watch,
+	.desktop .rec-card.alt-card .zflix-cta,
+	.desktop .rec-card.alt-card .amazon-cta,
+	.desktop .rec-card.alt-card .preview-btn,
+	.desktop .rec-card.alt-card .trailer-wrap,
+	.desktop .rec-card.alt-card .media-preview,
+	.desktop .rec-card.alt-card .score-breakdown,
+	.minimal .rec-card.alt-card .where-watch,
+	.minimal .rec-card.alt-card .zflix-cta,
+	.minimal .rec-card.alt-card .amazon-cta,
+	.minimal .rec-card.alt-card .preview-btn,
+	.minimal .rec-card.alt-card .trailer-wrap,
+	.minimal .rec-card.alt-card .media-preview,
+	.minimal .rec-card.alt-card .score-breakdown {
+		display: none;
 	}
 	.alternates-label {
 		max-width: 80rem;
@@ -5284,7 +5263,10 @@
 	.desktop .service-pins {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.35rem;
+		gap: 0.25rem;
+	}
+	.desktop .era-chip.service-pin {
+		padding: 0.22rem 0.45rem;
 	}
 	.desktop .tonight-hud {
 		margin: 0 0 0.35rem;
@@ -5302,19 +5284,25 @@
 		gap: 0.3rem;
 		margin: 0 0 0.45rem;
 	}
+	.desktop .rec-card .not-this-row {
+		display: none;
+	}
 	.desktop .why-chip {
 		font-size: 0.62rem;
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		padding: 0.15rem 0.4rem;
-		border: 1.5px solid var(--line);
+		border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
 		color: var(--ink);
 	}
 	.desktop .why-chip-apps {
-		border-color: var(--accent, #22c55e);
+		border-color: color-mix(in srgb, var(--accent, #22c55e) 55%, transparent);
 		color: var(--accent, #22c55e);
 		background: color-mix(in srgb, var(--accent, #22c55e) 12%, transparent);
+	}
+	.desktop .not-this-btn {
+		border-color: color-mix(in srgb, var(--line) 50%, transparent);
 	}
 	.desktop .not-this-label {
 		font-size: 0.62rem;
@@ -5328,7 +5316,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.35rem;
-		margin: 0 0 0.4rem;
+		margin: 0 0 0.2rem;
 	}
 	.desktop .match-pct {
 		margin-right: auto;
@@ -6158,7 +6146,10 @@
 	.minimal .service-pins {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.35rem;
+		gap: 0.25rem;
+	}
+	.minimal .era-chip.service-pin {
+		padding: 0.25rem 0.55rem;
 	}
 	.minimal .tonight-hud {
 		margin: 0 0 0.4rem;
@@ -6176,6 +6167,9 @@
 		gap: 0.35rem;
 		margin: 0 0 0.5rem;
 	}
+	.minimal .rec-card .not-this-row {
+		display: none;
+	}
 	.minimal .why-chip {
 		font-size: 0.65rem;
 		font-weight: 600;
@@ -6183,13 +6177,16 @@
 		text-transform: uppercase;
 		padding: 0.18rem 0.45rem;
 		border-radius: 999px;
-		border: 1px solid rgba(160, 140, 240, 0.4);
+		border: 1px solid rgba(160, 140, 240, 0.28);
 		color: #c4b5fd;
 	}
 	.minimal .why-chip-apps {
-		border-color: #34d399;
+		border-color: rgba(52, 211, 153, 0.45);
 		color: #34d399;
 		background: rgba(52, 211, 153, 0.12);
+	}
+	.minimal .not-this-btn {
+		border-color: rgba(160, 140, 240, 0.28);
 	}
 	.minimal .not-this-label {
 		font-size: 0.65rem;
@@ -6203,7 +6200,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.4rem;
-		margin: 0 0 0.45rem;
+		margin: 0 0 0.22rem;
 	}
 	.minimal .match-pct {
 		margin-right: auto;

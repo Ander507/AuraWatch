@@ -1,7 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { isTursoConfigured } from '$lib/server/db';
-import { signInHref } from '$lib/authRedirect';
 import {
 	listUserPlaylists,
 	mapPlaylistPack,
@@ -11,10 +10,10 @@ import {
 
 // handling server actions for saving items to named lists and fetching them for the user profile view
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals }) => {
 	const session = await locals.auth();
 	if (!session?.user?.id) {
-		throw redirect(303, signInHref(url.pathname));
+		throw redirect(303, '/?auth=lists');
 	}
 
 	if (!isTursoConfigured()) {

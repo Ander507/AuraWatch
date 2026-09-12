@@ -5,10 +5,10 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { signOutEverywhere } from '$lib/discordSignIn';
-	import { signInQuery } from '$lib/authRedirect';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
 	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
+	import LoginPrompt from '$lib/components/LoginPrompt.svelte';
 	import {
 		ROOM_EXPIRED_MSG,
 		roomFiltersSummary,
@@ -108,7 +108,8 @@
 	);
 
 	const homeHref = resolve('/');
-	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
+	let showLoginPrompt = $state(false);
+	let roomReturnPath = $derived(`${page.url.pathname}${page.url.search}`);
 
 	let shareUrl = $derived(`${page.url.origin}/room/${room.slug}`);
 	let storageKey = $derived(`aurawatch_room_${room.slug}`);
@@ -654,7 +655,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
+			<button type="button" class="auth-btn" onclick={() => (showLoginPrompt = true)}>Sign in</button>
 		{/if}
 	</div>
 {/snippet}
@@ -1101,6 +1102,13 @@
 		</div>
 	{/if}
 </div>
+
+<LoginPrompt
+	bind:open={showLoginPrompt}
+	title="Sign in"
+	message="Sign in as the host to manage this room. Guests never need an account."
+	discordCallback={roomReturnPath}
+/>
 
 <style>
 	.min-brand {

@@ -4,11 +4,11 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { signOutEverywhere } from '$lib/discordSignIn';
-	import { signInQuery } from '$lib/authRedirect';
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
 	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
+	import LoginPrompt from '$lib/components/LoginPrompt.svelte';
 	import { parseRoomFilters } from '$lib/groupVibe';
 	import { CONTENT_LANGUAGES, DEFAULT_LANGUAGE, normalizeLanguage } from '$lib/languages';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
@@ -52,7 +52,8 @@
 	let deleteError = $state('');
 
 	const homeHref = resolve('/');
-	let signInQs = $derived(signInQuery(`${page.url.pathname}${page.url.search}`));
+	let showLoginPrompt = $state(false);
+	let roomReturnPath = $derived(`${page.url.pathname}${page.url.search}` || '/room');
 
 	const FORMAT_OPTIONS = [
 		{ id: 'movie', label: 'Movies' },
@@ -295,7 +296,7 @@
 			<span class="auth-name">{session.user.name || 'You'}</span>
 			<button type="button" class="auth-btn" onclick={() => signOutEverywhere()}>Sign out</button>
 		{:else}
-			<a class="auth-btn" href={`${resolve('/signin')}${signInQs}`}>Sign in</a>
+			<button type="button" class="auth-btn" onclick={() => (showLoginPrompt = true)}>Sign in</button>
 		{/if}
 	</div>
 {/snippet}
@@ -435,7 +436,9 @@
 							Sign in to create a Group Vibe Room. Guests joining your link never need an account.
 						</p>
 						<p class="room-back">
-							<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
+							<button type="button" class="room-signin-link" onclick={() => (showLoginPrompt = true)}>
+								Sign in →
+							</button>
 						</p>
 					{:else}
 						<form class="room-form vibe-form" onsubmit={createRoom}>
@@ -524,7 +527,9 @@
 								account.
 							</p>
 							<p class="room-back">
-								<a href={`${resolve('/signin')}${signInQs}`}>Sign in →</a>
+								<button type="button" class="room-signin-link" onclick={() => (showLoginPrompt = true)}>
+									Sign in →
+								</button>
 							</p>
 						{:else}
 							<form class="room-form vibe-form" onsubmit={createRoom}>
@@ -593,6 +598,13 @@
 	<AppBottomNav active="room" />
 </div>
 
+<LoginPrompt
+	bind:open={showLoginPrompt}
+	title="Sign in to create a room"
+	message="Guests joining your share link never need an account."
+	discordCallback={roomReturnPath}
+/>
+
 <style>
 	.min-brand {
 		text-decoration: none;
@@ -636,13 +648,19 @@
 		font-size: 0.78rem;
 	}
 
-	.room-back a {
+	.room-signin-link {
+		appearance: none;
+		background: none;
+		border: 0;
+		padding: 0;
+		font: inherit;
+		cursor: pointer;
 		color: var(--accent, #ff4c00);
 		text-decoration: none;
 		font-weight: 600;
 	}
 
-	.room-back a:hover {
+	.room-signin-link:hover {
 		text-decoration: underline;
 	}
 

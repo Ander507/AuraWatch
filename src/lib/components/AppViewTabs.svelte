@@ -8,19 +8,22 @@
 		listCount,
 		matchActive,
 		listsActive,
-		onMatch
+		onMatch,
+		onLists
 	}: {
 		active: Active;
 		listCount?: number;
 		matchActive?: boolean;
 		listsActive?: boolean;
 		onMatch?: () => void;
+		onLists?: () => void;
 	} = $props();
 
 	let listsLabel = $derived(
 		listCount != null ? `My lists (${listCount})` : 'My lists'
 	);
 	let matchIsCurrent = $derived(onMatch ? Boolean(matchActive) : active === 'match');
+	let listsIsCurrent = $derived(onLists ? Boolean(listsActive) : active === 'lists');
 </script>
 
 <div class="view-tabs hidden lg:inline-flex" role="group" aria-label="App views">
@@ -47,7 +50,17 @@
 		<a class="view-tab-btn" href={resolve('/')} data-sveltekit-preload-data="hover">Match</a>
 	{/if}
 
-	{#if active === 'lists'}
+	{#if onLists}
+		<button
+			type="button"
+			class="view-tab-btn"
+			class:active={listsIsCurrent}
+			aria-pressed={listsIsCurrent}
+			onclick={onLists}
+		>
+			{listsLabel}
+		</button>
+	{:else if active === 'lists'}
 		<span class="view-tab-btn active" aria-current="page">{listsLabel}</span>
 	{:else}
 		<a
