@@ -2078,6 +2078,7 @@
 		{#if isSongs || isFullVibe}
 			<div class="field">
 				<MusicPlatformSelector
+					variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 					bind:value={musicPlatform}
 					disabled={isLoading}
 					onchange={onMusicPlatformChange}

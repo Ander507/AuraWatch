@@ -535,6 +535,7 @@
 	{#if isSongs || isFullVibe}
 		<div class="field">
 			<MusicPlatformSelector
+				variant={theme}
 				bind:value={musicPlatform}
 				disabled={isLoading}
 				onchange={onMusicPlatformChange}
