@@ -7,9 +7,9 @@
 const JW_GQL = 'https://apis.justwatch.com/graphql';
 const JW_IMG = 'https://images.justwatch.com';
 
-export type JustWatchProvider = {
-	name: string;
-	logo: string | null;
+import type { WatchProviderItem } from '$lib/watchProviderTypes';
+
+export type JustWatchProvider = WatchProviderItem & {
 	url: string | null;
 	type: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
 };
@@ -18,6 +18,9 @@ type JwOffer = {
 	monetizationType?: string;
 	presentationType?: string;
 	standardWebURL?: string | null;
+	retailPrice?: string | null;
+	retailPriceValue?: number | null;
+	currency?: string | null;
 	package?: {
 		packageId?: number;
 		clearName?: string;
@@ -49,6 +52,31 @@ function iconUrl(path: string | null | undefined): string | null {
 	const resolved = path.replace('{profile}', 's100').replace('{format}', 'png');
 	if (resolved.startsWith('http')) return resolved;
 	return `${JW_IMG}${resolved.startsWith('/') ? '' : '/'}${resolved}`;
+}
+
+function offerQuality(raw: string | undefined): string | null {
+	const t = String(raw || '').toUpperCase();
+	if (!t || t === 'ADS') return null;
+	if (t === '_4K' || t === '4K') return '4K';
+	if (t === 'HD' || t === 'SD') return t;
+	return null;
+}
+
+function offerPrice(offer: JwOffer): string | null {
+	const formatted = offer.retailPrice?.trim();
+	if (formatted) return formatted;
+	const val = offer.retailPriceValue;
+	const cur = offer.currency?.trim();
+	if (val == null || !cur) return null;
+	try {
+		return new Intl.NumberFormat('en', {
+			style: 'currency',
+			currency: cur,
+			minimumFractionDigits: 2
+		}).format(val);
+	} catch {
+		return `${cur} ${val}`;
+	}
 }
 
 function mapMonetization(raw: string | undefined): JustWatchProvider['type'] | null {
@@ -156,7 +184,10 @@ function dedupeOffers(offers: JwOffer[]): JustWatchProvider[] {
 				name,
 				logo: iconUrl(offer.package?.icon),
 				url,
-				type
+				type,
+				price: offerPrice(offer),
+				currency: offer.currency?.trim() || null,
+				quality: offerQuality(offer.presentationType)
 			}
 		});
 	}
@@ -196,6 +227,9 @@ export async function fetchJustWatchProviders(opts: {
 						monetizationType
 						presentationType
 						standardWebURL
+						retailPrice(language: "en")
+						retailPriceValue
+						currency
 						package { packageId clearName icon }
 					}
 				}
@@ -205,6 +239,9 @@ export async function fetchJustWatchProviders(opts: {
 						monetizationType
 						presentationType
 						standardWebURL
+						retailPrice(language: "en")
+						retailPriceValue
+						currency
 						package { packageId clearName icon }
 					}
 				}

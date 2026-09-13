@@ -1,8 +1,7 @@
-export type WatchProviderBadge = {
-	name: string;
-	logo: string | null;
+import type { WatchProviderItem } from '$lib/watchProviderTypes';
+
+export type WatchProviderBadge = WatchProviderItem & {
 	url: string | null;
-	type?: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
 };
 
 export type WatchProvidersResponse = {

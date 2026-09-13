@@ -40,7 +40,10 @@ function parseProviders(raw: unknown): SavedWatchProvider[] | undefined {
 				r.type === 'ads' ||
 				r.type === 'free'
 					? r.type
-					: undefined
+					: undefined,
+			price: r.price != null ? String(r.price) : undefined,
+			currency: r.currency != null ? String(r.currency) : undefined,
+			quality: r.quality != null ? String(r.quality) : undefined
 		});
 	}
 	return out.length ? out : undefined;

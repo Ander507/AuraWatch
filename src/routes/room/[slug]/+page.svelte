@@ -36,7 +36,8 @@
 		musicListenUrl,
 		type MusicPlatform
 	} from '$lib/musicPlatform';
-	import StreamingBadges from '$lib/components/StreamingBadges.svelte';
+	import WatchProviders from '$lib/components/WatchProviders.svelte';
+	import type { WatchProviderItem, WatchProviderType } from '$lib/watchProviderTypes';
 	import '$lib/styles/app-chrome.css';
 
 	type Participant = {
@@ -55,12 +56,7 @@
 		createdAt: string | null;
 	};
 
-	type RecProvider = {
-		name: string;
-		logo: string | null;
-		url?: string | null;
-		type?: string;
-	};
+	type RecProvider = WatchProviderItem;
 
 	type RecItem = {
 		title: string;
@@ -239,7 +235,7 @@
 	function asProviders(raw: unknown): RecProvider[] {
 		if (!Array.isArray(raw)) return [];
 		const out: RecProvider[] = [];
-		for (const row of raw.slice(0, 8)) {
+		for (const row of raw.slice(0, 24)) {
 			if (!row || typeof row !== 'object') continue;
 			const p = row as Record<string, unknown>;
 			const name = String(p.name || '').trim();
@@ -248,7 +244,17 @@
 				name,
 				logo: p.logo ? String(p.logo) : null,
 				url: p.url ? String(p.url) : null,
-				type: p.type ? String(p.type) : undefined
+				type:
+					p.type === 'flatrate' ||
+					p.type === 'rent' ||
+					p.type === 'buy' ||
+					p.type === 'ads' ||
+					p.type === 'free'
+						? (p.type as WatchProviderType)
+						: undefined,
+				price: p.price != null ? String(p.price) : undefined,
+				currency: p.currency != null ? String(p.currency) : undefined,
+				quality: p.quality != null ? String(p.quality) : undefined
 			});
 		}
 		return out;
@@ -852,7 +858,7 @@
 			<ul class="result-list grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 max-w-7xl mx-auto px-4">
 				{#each visibleResults as item (recLocalId(item))}
 					{@const href = primaryHref(item)}
-					{@const providers = item.providers?.filter((p) => p?.name)?.slice(0, 8) ?? []}
+					{@const providers = item.providers?.filter((p) => p?.name) ?? []}
 					{@const pct = itemMatchPercent(item)}
 					{@const tone = matchTone(pct)}
 					{@const bookmarked = isOnLocalList(watchlist, recLocalId(item))}
@@ -918,7 +924,7 @@
 							{/if}
 							{#if providers.length}
 								{#if recKind(item) === 'media'}
-									<StreamingBadges providers={providers} />
+									<WatchProviders providers={providers} variant="minimal" compact />
 								{:else}
 									<div class="provider-row" aria-label="Where to watch">
 										{#each providers as p, pi (p.name + String(pi))}

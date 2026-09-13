@@ -30,6 +30,9 @@ export type SavedProvider = {
 	logo: string | null;
 	url?: string | null;
 	type?: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
+	price?: string | null;
+	currency?: string | null;
+	quality?: string | null;
 };
 
 /** yank a tiny providers array out of form/json junk before we stash it in turso */
@@ -64,7 +67,18 @@ export function sanitizeProvidersJson(raw: unknown): string | null {
 			typeRaw === 'free'
 				? typeRaw
 				: undefined;
-		out.push({ name, logo, url, type });
+		const price = r.price != null ? sanitizeShortText(String(r.price), 24) : null;
+		const currency = r.currency != null ? sanitizeShortText(String(r.currency), 8) : null;
+		const quality = r.quality != null ? sanitizeShortText(String(r.quality), 8) : null;
+		out.push({
+			name,
+			logo,
+			url,
+			type,
+			price: price || undefined,
+			currency: currency || undefined,
+			quality: quality || undefined
+		});
 	}
 	if (!out.length) return null;
 	return JSON.stringify(out);

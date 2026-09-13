@@ -19,7 +19,8 @@
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import MusicPlatformSelector from '$lib/components/MusicPlatformSelector.svelte';
-	import StreamingBadges from '$lib/components/StreamingBadges.svelte';
+	import WatchProviders from '$lib/components/WatchProviders.svelte';
+	import type { WatchProviderItem } from '$lib/watchProviderTypes';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import ListsDrawer from '$lib/components/ListsDrawer.svelte';
@@ -428,12 +429,7 @@
 		cloudPlaylists.reduce((n: number, p: CloudPlaylistClient) => n + (p.items?.length || 0), 0)
 	);
 
-	type Provider = {
-		name: string;
-		logo: string | null;
-		url?: string | null;
-		type?: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
-	};
+	type Provider = WatchProviderItem;
 
 	type Rec = {
 		title: string;
@@ -1174,30 +1170,6 @@
 		const id = item.price_range;
 		if (!id) return undefined;
 		return PRICE_RANGE_BADGE[id] || id;
-	}
-
-	type ProviderGroup = { label: string; items: Provider[] };
-
-	/** Group TMDB providers into Stream / Rent / Buy like the TMDB watch page. */
-	function providerGroups(providers: Provider[] | undefined): ProviderGroup[] {
-		if (!providers?.length) return [];
-		const hasTypes = providers.some((p) => p.type);
-		if (!hasTypes) {
-			return [{ label: '', items: providers }];
-		}
-
-		const buckets: Array<{ label: string; types: NonNullable<Provider['type']>[] }> = [
-			{ label: 'Stream', types: ['flatrate', 'ads', 'free'] },
-			{ label: 'Rent', types: ['rent'] },
-			{ label: 'Buy', types: ['buy'] }
-		];
-
-		return buckets
-			.map((b) => ({
-				label: b.label,
-				items: providers.filter((p) => p.type && b.types.includes(p.type))
-			}))
-			.filter((g) => g.items.length > 0);
 	}
 
 	function formatClock(d = new Date()) {
@@ -2810,6 +2782,14 @@
 								Decide for me
 							</button>
 						</div>
+						{#if h.providers?.length && !isSongRec(h) && !isGameRec(h) && !isBookRec(h) && !isBoardRec(h) && !isRobloxRec(h)}
+							<WatchProviders
+								providers={h.providers}
+								region={h.region}
+								watchLink={h.watchLink}
+								variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
+							/>
+						{/if}
 						<div class="hero-notthis">
 							<span class="not-this-label">Not this:</span>
 							{#each NOT_THIS_STEERS as steer (steer.id)}
@@ -2883,14 +2863,21 @@
 									{/if}
 									<h3 class="vibe-slot-title">{item.watch.title}</h3>
 									<p class="vibe-slot-pitch">{item.watch.pitch}</p>
-									{#if item.watch.watchLink || item.watch.providers?.length}
+									{#if item.watch.providers?.length}
+										<WatchProviders
+											providers={item.watch.providers}
+											watchLink={item.watch.watchLink}
+											label="Where to watch"
+											variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
+											compact
+										/>
+									{:else if item.watch.watchLink}
 										<a
 											class="watch-cta"
-											href={item.watch.watchLink || item.watch.providers?.find((p) => Boolean(p.url))?.url || '#'}
+											href={item.watch.watchLink}
 											target="_blank"
 											rel="noopener noreferrer">Where to watch</a
 										>
-										<StreamingBadges providers={item.watch.providers || []} />
 									{/if}
 								</section>
 								<section class="vibe-slot">
@@ -3131,26 +3118,10 @@
 								</div>
 							{:else}
 								<div class="where-watch">
-									<div class="watch-heading">
-										{#if item.watchLink && !song && !book}
-											<a
-												class="watch-label watch-label-link"
-												href={item.watchLink}
-												target="_blank"
-												rel="external noopener noreferrer"
-											>
-												Where to Watch
-											</a>
-										{:else}
-											<span class="watch-label"
-												>{song ? 'Listen' : book ? 'Read' : 'Where to Watch'}</span
-											>
-										{/if}
-										{#if item.region && !song && !book}
-											<span class="watch-region">{item.region}</span>
-										{/if}
-									</div>
 									{#if song || book}
+										<div class="watch-heading">
+											<span class="watch-label">{song ? 'Listen' : 'Read'}</span>
+										</div>
 										<div class="provider-row provider-row-text">
 											{#each item.providers || [] as p, pi (p.name + String(pi))}
 												{#if p.url}
@@ -3176,48 +3147,13 @@
 											{/each}
 										</div>
 									{:else if item.providers?.length}
-										<StreamingBadges providers={item.providers} />
-										<div class="provider-groups">
-											{#each providerGroups(item.providers).filter((g) => g.label !== 'Stream') as group (group.label)}
-												<div class="provider-group">
-													{#if group.label}
-														<span class="provider-category">{group.label}</span>
-													{/if}
-													<div class="provider-row">
-														{#each group.items as p, pi (p.name + (p.type || '') + String(pi))}
-															{#if p.url}
-																<a
-																	class="provider-btn max-lg:h-11 max-lg:w-11 max-lg:rounded-lg"
-																	href={p.url}
-																	target="_blank"
-																	rel="external noopener noreferrer"
-																	title={p.name}
-																	aria-label="{group.label ? `${group.label}: ` : ''}{p.name}"
-																>
-																	{#if p.logo}
-																		<img src={p.logo} alt="" class="provider-logo" />
-																	{:else}
-																		<span class="provider-fallback">{p.name.slice(0, 2)}</span>
-																	{/if}
-																</a>
-															{:else}
-																<span
-																	class="provider-btn max-lg:h-11 max-lg:w-11 max-lg:rounded-lg"
-																	title={p.name}
-																	aria-label="{group.label ? `${group.label}: ` : ''}{p.name}"
-																>
-																	{#if p.logo}
-																		<img src={p.logo} alt="" class="provider-logo" />
-																	{:else}
-																		<span class="provider-fallback">{p.name.slice(0, 2)}</span>
-																	{/if}
-																</span>
-															{/if}
-														{/each}
-													</div>
-												</div>
-											{/each}
-										</div>
+										<WatchProviders
+											providers={item.providers}
+											region={item.region}
+											watchLink={item.watchLink}
+											variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
+											compact
+										/>
 									{/if}
 									{#if book}
 										{@render amazonCta(item)}
@@ -5274,14 +5210,12 @@
 		text-decoration: underline;
 	}
 	/* alt cards: poster + title + match — no essay */
-	.desktop .rec-card.alt-card .where-watch,
 	.desktop .rec-card.alt-card .zflix-cta,
 	.desktop .rec-card.alt-card .amazon-cta,
 	.desktop .rec-card.alt-card .preview-btn,
 	.desktop .rec-card.alt-card .trailer-wrap,
 	.desktop .rec-card.alt-card .media-preview,
 	.desktop .rec-card.alt-card .score-breakdown,
-	.minimal .rec-card.alt-card .where-watch,
 	.minimal .rec-card.alt-card .zflix-cta,
 	.minimal .rec-card.alt-card .amazon-cta,
 	.minimal .rec-card.alt-card .preview-btn,

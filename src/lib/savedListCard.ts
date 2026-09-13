@@ -5,6 +5,9 @@ export type SavedWatchProvider = {
 	logo: string | null;
 	url?: string | null;
 	type?: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
+	price?: string | null;
+	currency?: string | null;
+	quality?: string | null;
 };
 
 export type SavedListCardItem = {

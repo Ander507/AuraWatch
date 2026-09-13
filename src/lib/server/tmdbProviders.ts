@@ -6,14 +6,13 @@ import { env } from '$env/dynamic/private';
 import { normalizeRegion } from '$lib/regions';
 import { providerOfferUrl } from '$lib/watchLinks';
 import { fetchJustWatchProviders } from '$lib/server/justwatchOffers';
+import type { WatchProviderItem, WatchProviderType } from '$lib/watchProviderTypes';
 
 const IMG = 'https://image.tmdb.org/t/p/w92';
 
-export type WatchProvider = {
-	name: string;
-	logo: string | null;
+export type WatchProvider = WatchProviderItem & {
 	url: string | null;
-	type: 'flatrate' | 'rent' | 'buy' | 'ads' | 'free';
+	type: WatchProviderType;
 };
 
 // user-picked region from the UI wins; env is only a last-ditch default
