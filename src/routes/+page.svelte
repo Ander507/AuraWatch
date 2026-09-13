@@ -2984,29 +2984,31 @@
 								>
 									<h2 class="rec-title">{item.title}</h2>
 								</button>
-								{#if item.content_rating && !song}
-									<span class="age-badge" title="Content rating">{item.content_rating}</span>
-								{/if}
-								{#if priceBadge}
-									<span class="age-badge price-badge" title="Price range">{priceBadge}</span>
-								{/if}
-								{#if item.complexity && board}
-									<span class="age-badge" title="Complexity">{item.complexity}</span>
-								{/if}
-								<button
-									type="button"
-									class="save-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
-									class:saved
-									aria-label={saved ? 'Remove from My List' : 'Save to My List'}
-									aria-pressed={saved}
-									onclick={() => {
-										fabSaveIndex = visI;
-										toggleSave(item);
-									}}
-								>
-									<span class="save-btn-icon" aria-hidden="true">{saved ? '★' : '☆'}</span>
-									<span class="save-btn-label">{saved ? 'Saved' : 'Save'}</span>
-								</button>
+								<div class="rec-title-tools">
+									{#if item.content_rating && !song}
+										<span class="age-badge" title="Content rating">{item.content_rating}</span>
+									{/if}
+									{#if priceBadge}
+										<span class="age-badge price-badge" title="Price range">{priceBadge}</span>
+									{/if}
+									{#if item.complexity && board}
+										<span class="age-badge" title="Complexity">{item.complexity}</span>
+									{/if}
+									<button
+										type="button"
+										class="save-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
+										class:saved
+										aria-label={saved ? 'Remove from My List' : 'Save to My List'}
+										aria-pressed={saved}
+										onclick={() => {
+											fabSaveIndex = visI;
+											toggleSave(item);
+										}}
+									>
+										<span class="save-btn-icon" aria-hidden="true">{saved ? '★' : '☆'}</span>
+										<span class="save-btn-label">{saved ? 'Saved' : 'Save'}</span>
+									</button>
+								</div>
 							</div>
 							{#if (song || book) && item.artist}
 								<p class="rec-artist">{item.artist}</p>
@@ -4705,15 +4707,21 @@
 
 	.desktop .rec-title-row {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: 0.35rem 0.5rem;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.35rem;
 		margin: 0 0 0.3rem;
+		min-width: 0;
 	}
 	.desktop .rec-title-row .rec-title {
 		margin: 0;
-		flex: 1 1 10rem;
 		min-width: 0;
+	}
+	.desktop .rec-title-tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem;
 	}
 	.desktop .rec-title-row .save-btn {
 		margin-left: auto;
@@ -5052,7 +5060,7 @@
 	.desktop .hero-pick,
 	.minimal .hero-pick {
 		display: grid;
-		grid-template-columns: 160px 1fr;
+		grid-template-columns: 160px minmax(0, 1fr);
 		gap: 1.25rem;
 		max-width: 80rem;
 		margin: 0 auto 1rem;
@@ -5062,12 +5070,12 @@
 		background: var(--chrome, var(--panel, var(--window, #fff)));
 		color: var(--ink);
 		box-shadow: 0 8px 30px -18px rgba(0, 0, 0, 0.45);
-		align-items: center;
+		align-items: start;
 	}
 	@media (min-width: 640px) {
 		.desktop .hero-pick,
 		.minimal .hero-pick {
-			grid-template-columns: 200px 1fr;
+			grid-template-columns: 200px minmax(0, 1fr);
 			gap: 1.75rem;
 		}
 	}
@@ -5201,10 +5209,11 @@
 		cursor: pointer;
 		color: inherit;
 		min-width: 0;
-		flex: 1;
+		width: 100%;
 	}
 	.rec-title-promote .rec-title {
 		margin: 0;
+		overflow-wrap: anywhere;
 	}
 	.rec-title-promote:hover .rec-title {
 		text-decoration: underline;
@@ -5417,6 +5426,8 @@
 		border: 2px solid var(--line);
 		background: var(--window);
 		min-width: 0;
+		max-width: 100%;
+		overflow: hidden;
 	}
 	.desktop .rec-card.vibe-package {
 		grid-column: 1 / -1;
@@ -5569,6 +5580,10 @@
 		gap: 1.1rem;
 		align-items: start;
 		min-width: 0;
+	}
+	.desktop .rec-copy {
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	@media (min-width: 960px) {
@@ -5784,6 +5799,8 @@
 		align-items: flex-start;
 		gap: 0.65rem;
 		margin-top: 1.1rem;
+		width: 100%;
+		min-width: 0;
 	}
 	.desktop .watch-heading {
 		display: flex;
@@ -6289,6 +6306,8 @@
 		border-radius: 12px;
 		background: rgba(255, 255, 255, 0.03);
 		min-width: 0;
+		max-width: 100%;
+		overflow: hidden;
 	}
 	.minimal .rec-card.vibe-package {
 		grid-column: 1 / -1;
@@ -6717,15 +6736,21 @@
 
 	.minimal .rec-title-row {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: 0.35rem 0.5rem;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.35rem;
 		margin: 0 0 0.35rem;
+		min-width: 0;
 	}
 	.minimal .rec-title-row .rec-title {
 		margin: 0;
-		flex: 1 1 10rem;
 		min-width: 0;
+	}
+	.minimal .rec-title-tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem;
 	}
 	.minimal .rec-title-row .save-btn {
 		margin-left: auto;
@@ -7142,9 +7167,13 @@
 	.minimal .rec-grid {
 		display: grid;
 		grid-template-columns: 110px minmax(0, 1fr);
-		gap: 1.25rem;
+		gap: 1rem;
 		align-items: start;
 		min-width: 0;
+	}
+	.minimal .rec-copy {
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	@media (min-width: 900px) {
@@ -7359,6 +7388,8 @@
 		align-items: flex-start;
 		gap: 0.7rem;
 		margin-top: 1.35rem;
+		width: 100%;
+		min-width: 0;
 	}
 	.minimal .watch-heading {
 		display: flex;

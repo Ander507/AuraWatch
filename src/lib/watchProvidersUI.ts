@@ -32,7 +32,22 @@ export function qualityBadgeLabel(quality: string | null | undefined): string | 
 	return null;
 }
 
+/** Short price that fits under a logo tile (39 kr, $4.99). */
 export function providerPriceLabel(p: WatchProviderItem): string | null {
-	if (p.price?.trim()) return p.price.trim();
-	return null;
+	const raw = p.price?.trim();
+	if (!raw) return null;
+
+	const dkk = raw.match(/^DKK\s*([\d.,]+)/i);
+	if (dkk) return `${dkk[1].replace(/\.00$/, '')} kr`;
+
+	const usd = raw.match(/^\$([\d.,]+)/);
+	if (usd) return `$${usd[1].replace(/\.00$/, '')}`;
+
+	const gbp = raw.match(/^£([\d.,]+)/);
+	if (gbp) return `£${gbp[1].replace(/\.00$/, '')}`;
+
+	const eur = raw.match(/^(?:€|EUR)\s*([\d.,]+)/i);
+	if (eur) return `€${eur[1].replace(/\.00$/, '')}`;
+
+	return raw.replace(/^[A-Z]{3}\s+/, '').slice(0, 10);
 }
