@@ -1072,6 +1072,9 @@ export const POST: RequestHandler = async ({ request }) => {
 					zflix_url: listen[0]?.url, // not zflix. dont ask.
 					listen_url: track?.appleUrl || listen[0]?.url,
 					preview_url: track?.previewUrl || undefined,
+					// binding audio preview source strictly to track id to prevent index desync during fast searches
+					track_id: track?.id || undefined,
+					apple_url: track?.appleUrl || undefined,
 					likeTitle: likeLabel || undefined,
 					likeTitles: likeTitles.length ? likeTitles : undefined,
 					kind: 'song' as const
@@ -1704,6 +1707,8 @@ export const POST: RequestHandler = async ({ request }) => {
 					preview_url: track?.previewUrl || undefined,
 					listen_url: listen[0]?.url || undefined,
 					providers: listen,
+					track_id: track?.id || undefined,
+					apple_url: track?.appleUrl || undefined,
 					kind: 'song' as const
 				},
 				snack: {

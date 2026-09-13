@@ -286,7 +286,7 @@
 					<span class="titlebar-tag">LIVE</span>
 				</div>
 				<div class="window-body form-body bg-white">
-					<p class="path-line">C:\AuraWatch\</p>
+					<p class="path-line">~/aurawatch/discover</p>
 					<h1 class="brand">AuraWatch</h1>
 					<p class="subhead">can’t find what to watch?</p>
 					<p class="lede">
@@ -309,7 +309,7 @@
 					<span class="titlebar-tag">LIST</span>
 				</div>
 					<div class="window-body result-body">
-						<p class="path-line">C:\AuraWatch\list\</p>
+						<p class="path-line">~/aurawatch/list</p>
 						{@render sharedList()}
 					</div>
 			</section>

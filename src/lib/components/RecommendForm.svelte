@@ -6,6 +6,7 @@
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
+	import MusicPlatformSelector from '$lib/components/MusicPlatformSelector.svelte';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
 		CONTENT_LANGUAGES,
@@ -17,6 +18,11 @@
 	import { BOARD_GAMES_COMING_SOON, BOARD_GAMES_SOON_COPY } from '$lib/boardGamesGate';
 	import { ROBLOX_COMING_SOON, ROBLOX_SOON_COPY } from '$lib/robloxGate';
 	import type { UiTheme } from '$lib/uiTheme.svelte';
+	import {
+		loadMusicPlatform,
+		saveMusicPlatform,
+		type MusicPlatform
+	} from '$lib/musicPlatform';
 
 	let { theme, startAdvanced = false }: { theme: UiTheme; startAdvanced?: boolean } = $props();
 
@@ -245,6 +251,7 @@
 	let selectedPriceRange = $state('');
 	let selectedPlatforms = $state<string[]>([]);
 	let selectedSeasonCount = $state('');
+	let musicPlatform = $state<MusicPlatform>('youtube_music');
 	let showAdvanced = $state(untrack(() => startAdvanced));
 	let isLoading = $state(false);
 	let errMsg = $state('');
@@ -321,7 +328,13 @@
 		} catch {
 			/* shrug */
 		}
+		musicPlatform = loadMusicPlatform();
 	});
+
+	function onMusicPlatformChange(platform: MusicPlatform) {
+		musicPlatform = platform;
+		saveMusicPlatform(platform);
+	}
 
 	function persistRegion() {
 		try {
@@ -518,6 +531,16 @@
 			<p class="field-hint">{ROBLOX_SOON_COPY.eyebrow} — picks stay parked until catalog is stable</p>
 		{/if}
 	</div>
+
+	{#if isSongs || isFullVibe}
+		<div class="field">
+			<MusicPlatformSelector
+				bind:value={musicPlatform}
+				disabled={isLoading}
+				onchange={onMusicPlatformChange}
+			/>
+		</div>
+	{/if}
 
 	<!-- tucking the massive genre list into an accordion so it doesn't eat the whole screen -->
 	<div class="field">

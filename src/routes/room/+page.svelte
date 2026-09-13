@@ -509,7 +509,7 @@
 						<span class="titlebar-tag">NEW</span>
 					</div>
 					<div class="window-body form-body">
-						<p class="path-line">C:\AuraWatch\room\</p>
+						<p class="path-line">~/aurawatch/room</p>
 						<h1 class="brand">{SITE.name}</h1>
 						<p class="subhead">group vibe room</p>
 						<p class="lede">
@@ -583,7 +583,7 @@
 						<span class="titlebar-tag">LIVE</span>
 					</div>
 					<div class="window-body result-body">
-						<p class="path-line">C:\AuraWatch\rooms\</p>
+						<p class="path-line">~/aurawatch/rooms</p>
 						{@render myRoomsPanel()}
 					</div>
 				</section>

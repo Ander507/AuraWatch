@@ -263,7 +263,7 @@
 						<span class="titlebar-tag">LISTS</span>
 					</div>
 					<div class="window-body form-body">
-						<p class="path-line">C:\AuraWatch\lists\</p>
+						<p class="path-line">~/aurawatch/lists</p>
 						<h1 class="brand">My Lists</h1>
 						<p class="subhead">saved playlists</p>
 						<p class="lede">

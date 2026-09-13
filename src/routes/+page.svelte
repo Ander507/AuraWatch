@@ -18,10 +18,19 @@
 	import RegionSelect from '$lib/components/RegionSelect.svelte';
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
+	import MusicPlatformSelector from '$lib/components/MusicPlatformSelector.svelte';
+	import StreamingBadges from '$lib/components/StreamingBadges.svelte';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
 	import ListsDrawer from '$lib/components/ListsDrawer.svelte';
 	import LoginPrompt from '$lib/components/LoginPrompt.svelte';
+	import {
+		loadMusicPlatform,
+		musicListenUrl,
+		platformLabel,
+		saveMusicPlatform,
+		type MusicPlatform
+	} from '$lib/musicPlatform';
 	import { coverFallbackStyle, mediaInitials } from '$lib/mediaInitials';
 	import { matchPercent, matchTone, matchWhyChips } from '$lib/matchScore';
 	import { RESULT_ERA_OPTIONS, matchesResultEra, parseRecYear, type ResultEra } from '$lib/resultEra';
@@ -323,6 +332,7 @@
 	let selectedSeasonCount = $state('');
 	let selectedRuntime = $state<RuntimeBudget>('');
 	let myServices = $state<string[]>([]);
+	let musicPlatform = $state<MusicPlatform>('youtube_music');
 	let tonightSky = $state<TonightSky | null>(null);
 	let recentVibes = $state<RecentVibe[]>([]);
 	let pinnedHeroId = $state<string | null>(null);
@@ -448,6 +458,9 @@
 		kind?: 'song' | 'media' | 'game' | 'book' | 'boardgame' | 'roblox' | 'vibe' | 'snack';
 		listen_url?: string;
 		preview_url?: string;
+		track_id?: number;
+		tmdb_id?: number;
+		apple_url?: string | null;
 		trailer_youtube_key?: string;
 		content_rating?: string;
 		platforms?: string[];
@@ -642,15 +655,21 @@
 		return "tonight's pick";
 	}
 
-	function primaryListenUrl(item: Rec): string {
-		if (item.listen_url) return item.listen_url;
-		const first = item.providers?.find((p) => p.url);
-		if (first?.url) return first.url;
-		// last resort: yeet them at youtube search
-		const q = encodeURIComponent(
-			item.artist ? `${item.artist} ${item.title}` : item.title
+	function songAppleUrl(item: Rec): string | null {
+		if (item.apple_url) return item.apple_url;
+		const apple = item.providers?.find(
+			(p) => p.url && /apple\.com|itunes\.apple/i.test(p.name + p.url)
 		);
-		return `https://www.youtube.com/results?search_query=${q}`;
+		return apple?.url || null;
+	}
+
+	function primaryListenUrl(item: Rec): string {
+		// mapping dynamic stream queries across music platforms so users aren't locked to apple music
+		return musicListenUrl(musicPlatform, {
+			title: item.title,
+			artist: item.artist,
+			appleUrl: songAppleUrl(item)
+		});
 	}
 
 	function gameStoreLinks(item: Rec): Array<{ platform: string; url: string; store?: string }> {
@@ -772,13 +791,23 @@
 		);
 	}
 
-	function previewKey(item: Rec, i: number) {
-		return `${item.title}::${i}`;
+	// binding audio preview source strictly to track id to prevent index desync during fast searches
+	function previewKey(item: Rec) {
+		if (item.track_id != null) return `track:${item.track_id}`;
+		if (item.tmdb_id != null) return `tmdb:${item.tmdb_id}`;
+		if (item.trailer_youtube_key) return `yt:${item.trailer_youtube_key}`;
+		return `title:${item.title}|${item.artist || ''}|${item.mediaType || ''}`;
 	}
 
-	function toggleTrailer(item: Rec, i: number) {
-		const key = previewKey(item, i);
+	function toggleTrailer(item: Rec) {
+		const key = previewKey(item);
 		playingPreview = playingPreview === key ? null : key;
+	}
+
+	function audioPreviewKey(item: Rec) {
+		return item.track_id != null
+			? `track:${item.track_id}`
+			: `song:${item.artist || ''}|${item.title}|${item.preview_url || ''}`;
 	}
 
 	function onCoverError(index: number) {
@@ -857,6 +886,19 @@
 			kind,
 			listen_url: raw?.listen_url || raw?.zflix_url,
 			preview_url: raw?.preview_url || raw?.previewUrl || undefined,
+			track_id:
+				typeof raw?.track_id === 'number'
+					? raw.track_id
+					: typeof raw?.trackId === 'number'
+						? raw.trackId
+						: undefined,
+			tmdb_id:
+				typeof raw?.tmdb_id === 'number'
+					? raw.tmdb_id
+					: typeof raw?.tmdbId === 'number'
+						? raw.tmdbId
+						: undefined,
+			apple_url: raw?.apple_url || raw?.appleUrl || null,
 			trailer_youtube_key: raw?.trailer_youtube_key || raw?.trailerYoutubeKey || undefined,
 			content_rating: raw?.content_rating || raw?.contentRating || undefined,
 			platforms: Array.isArray(raw?.platforms)
@@ -1312,6 +1354,7 @@
 		ignoredList = loadIgnoredList();
 		watchlist = loadWatchlist();
 		myServices = loadMyServices();
+		musicPlatform = loadMusicPlatform();
 		recentVibes = loadRecentVibes();
 		tonightSky = clockOnlySky();
 
@@ -1924,6 +1967,8 @@
 	}
 
 	function heroWatchUrl(item: Rec): string | null {
+		if (isSongRec(item)) return primaryListenUrl(item);
+		if (item.music && isVibeRec(item)) return primaryListenUrl(item.music);
 		if (item.watchLink) return item.watchLink;
 		const p = item.providers?.find((x) => x?.url);
 		if (p?.url) return p.url;
@@ -1931,6 +1976,11 @@
 		const wp = item.watch?.providers?.find((x) => x?.url);
 		if (wp?.url) return wp.url;
 		return null;
+	}
+
+	function onMusicPlatformChange(platform: MusicPlatform) {
+		musicPlatform = platform;
+		saveMusicPlatform(platform);
 	}
 
 	function heroWatchLabel(item: Rec): string {
@@ -2024,6 +2074,16 @@
 				<p class="field-hint">{ROBLOX_SOON_COPY.eyebrow} — picks stay parked until catalog is stable</p>
 			{/if}
 		</div>
+
+		{#if isSongs || isFullVibe}
+			<div class="field">
+				<MusicPlatformSelector
+					bind:value={musicPlatform}
+					disabled={isLoading}
+					onchange={onMusicPlatformChange}
+				/>
+			</div>
+		{/if}
 
 		<!-- tucking the massive genre list into an accordion so it doesn't eat the whole screen -->
 		<div class="field">
@@ -2829,6 +2889,7 @@
 											target="_blank"
 											rel="noopener noreferrer">Where to watch</a
 										>
+										<StreamingBadges providers={item.watch.providers || []} />
 									{/if}
 								</section>
 								<section class="vibe-slot">
@@ -2847,14 +2908,21 @@
 									{/if}
 									<p class="vibe-slot-pitch">{item.music.pitch}</p>
 									{#if item.music.preview_url}
-										<audio class="media-preview audio-preview" controls preload="none" src={item.music.preview_url}
-										></audio>
+										{#key audioPreviewKey(item.music)}
+											<audio
+												class="media-preview audio-preview"
+												controls
+												preload="none"
+												src={item.music.preview_url}
+												data-track-id={item.music.track_id ?? undefined}
+											></audio>
+										{/key}
 									{/if}
 									<a
 										class="watch-cta"
 										href={primaryListenUrl(item.music)}
 										target="_blank"
-										rel="noopener noreferrer">Open listen link</a
+										rel="noopener noreferrer">Listen on {platformLabel(musicPlatform)}</a
 									>
 								</section>
 								<section class="vibe-slot">
@@ -2992,14 +3060,17 @@
 							<!-- pitch lives on the hero only — keeps alt cards scannable -->
 
 							{#if song && item.preview_url}
-								<audio
-									class="media-preview audio-preview"
-									controls
-									preload="none"
-									src={item.preview_url}
-								></audio>
+								{#key audioPreviewKey(item)}
+									<audio
+										class="media-preview audio-preview"
+										controls
+										preload="none"
+										src={item.preview_url}
+										data-track-id={item.track_id ?? undefined}
+									></audio>
+								{/key}
 							{:else if !song && !game && !book && !board && !roblox && item.trailer_youtube_key}
-								{#if playingPreview === previewKey(item, i)}
+								{#if playingPreview === previewKey(item)}
 									<div class="trailer-wrap">
 										<iframe
 											class="media-preview trailer-frame"
@@ -3011,7 +3082,7 @@
 										<button
 											type="button"
 											class="preview-btn preview-close max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
-											onclick={() => toggleTrailer(item, i)}
+											onclick={() => toggleTrailer(item)}
 										>
 											Close video
 										</button>
@@ -3020,7 +3091,7 @@
 									<button
 										type="button"
 										class="preview-btn max-lg:min-h-11 max-lg:px-4 max-lg:py-2.5"
-										onclick={() => toggleTrailer(item, i)}
+										onclick={() => toggleTrailer(item)}
 									>
 										{item.mediaType === 'YouTube' ? 'Play video' : 'Play trailer'}
 									</button>
@@ -3104,8 +3175,9 @@
 											{/each}
 										</div>
 									{:else if item.providers?.length}
+										<StreamingBadges providers={item.providers} />
 										<div class="provider-groups">
-											{#each providerGroups(item.providers) as group (group.label)}
+											{#each providerGroups(item.providers).filter((g) => g.label !== 'Stream') as group (group.label)}
 												<div class="provider-group">
 													{#if group.label}
 														<span class="provider-category">{group.label}</span>
@@ -3155,7 +3227,7 @@
 											target="_blank"
 											rel="external noopener noreferrer"
 										>
-											Open listen link
+											Listen on {platformLabel(musicPlatform)}
 										</a>
 									{:else if zflixEnabled && item.mediaType !== 'YouTube'}
 										<a
@@ -3481,7 +3553,7 @@
 					<span class="titlebar-tag">LIVE</span>
 				</div>
 				<div class="window-body form-body">
-					<p class="path-line">C:\AuraWatch\</p>
+					<p class="path-line">~/aurawatch/discover</p>
 					<h1 class="brand">AuraWatch</h1>
 					<p class="subhead">can’t find what to watch?</p>
 					<p class="lede">

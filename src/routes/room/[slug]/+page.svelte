@@ -31,6 +31,12 @@
 		type LocalTitle
 	} from '$lib/localWatch';
 	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import {
+		loadMusicPlatform,
+		musicListenUrl,
+		type MusicPlatform
+	} from '$lib/musicPlatform';
+	import StreamingBadges from '$lib/components/StreamingBadges.svelte';
 	import '$lib/styles/app-chrome.css';
 
 	type Participant = {
@@ -73,6 +79,8 @@
 		listen_url?: string;
 		watch_link?: string;
 		preview_url?: string;
+		track_id?: number;
+		apple_url?: string;
 		trailer_youtube_key?: string;
 		platforms?: string[];
 		priceLabel?: string;
@@ -120,6 +128,7 @@
 	let joining = $state(false);
 	let joinError = $state('');
 	let alreadyJoined = $state(false);
+	let musicPlatform = $state<MusicPlatform>('youtube_music');
 
 	let matching = $state(false);
 	let matchError = $state('');
@@ -287,6 +296,8 @@
 			listen_url: raw?.listen_url ? String(raw.listen_url) : undefined,
 			watch_link: raw?.watch_link || raw?.watchLink ? String(raw.watch_link || raw.watchLink) : undefined,
 			preview_url: raw?.preview_url ? String(raw.preview_url) : undefined,
+			track_id: typeof raw?.track_id === 'number' ? raw.track_id : undefined,
+			apple_url: raw?.apple_url ? String(raw.apple_url) : undefined,
 			trailer_youtube_key: raw?.trailer_youtube_key
 				? String(raw.trailer_youtube_key)
 				: undefined,
@@ -309,6 +320,13 @@
 	}
 
 	function primaryHref(item: RecItem): string | null {
+		if (recKind(item) === 'song') {
+			return musicListenUrl(musicPlatform, {
+				title: item.title,
+				artist: item.artist,
+				appleUrl: item.apple_url || null
+			});
+		}
 		if (item.watch_link) return item.watch_link;
 		if (item.listen_url) return item.listen_url;
 		const store = item.storeLinks?.[0]?.url;
@@ -362,6 +380,7 @@
 		loadRememberedName();
 		ignoredList = loadIgnoredList();
 		watchlist = loadWatchlist();
+		musicPlatform = loadMusicPlatform();
 		clockLabel = formatClock();
 		const clockId = setInterval(() => {
 			clockLabel = formatClock();
@@ -898,34 +917,38 @@
 								<p class="result-pitch">{item.pitch}</p>
 							{/if}
 							{#if providers.length}
-								<div class="provider-row" aria-label="Where to watch">
-									{#each providers as p, pi (p.name + String(pi))}
-										{#if p.url}
-											<a
-												class="provider-btn"
-												href={p.url}
-												target="_blank"
-												rel="external noopener noreferrer"
-												title={p.name}
-												aria-label={p.name}
-											>
-												{#if p.logo}
-													<img src={p.logo} alt="" class="provider-logo" />
-												{:else}
-													<span class="provider-fallback">{p.name.slice(0, 2)}</span>
-												{/if}
-											</a>
-										{:else}
-											<span class="provider-btn" title={p.name} aria-label={p.name}>
-												{#if p.logo}
-													<img src={p.logo} alt="" class="provider-logo" />
-												{:else}
-													<span class="provider-fallback">{p.name.slice(0, 2)}</span>
-												{/if}
-											</span>
-										{/if}
-									{/each}
-								</div>
+								{#if recKind(item) === 'media'}
+									<StreamingBadges providers={providers} />
+								{:else}
+									<div class="provider-row" aria-label="Where to watch">
+										{#each providers as p, pi (p.name + String(pi))}
+											{#if p.url}
+												<a
+													class="provider-btn"
+													href={p.url}
+													target="_blank"
+													rel="external noopener noreferrer"
+													title={p.name}
+													aria-label={p.name}
+												>
+													{#if p.logo}
+														<img src={p.logo} alt="" class="provider-logo" />
+													{:else}
+														<span class="provider-fallback">{p.name.slice(0, 2)}</span>
+													{/if}
+												</a>
+											{:else}
+												<span class="provider-btn" title={p.name} aria-label={p.name}>
+													{#if p.logo}
+														<img src={p.logo} alt="" class="provider-logo" />
+													{:else}
+														<span class="provider-fallback">{p.name.slice(0, 2)}</span>
+													{/if}
+												</span>
+											{/if}
+										{/each}
+									</div>
+								{/if}
 							{/if}
 							{#if item.storeLinks?.length}
 								<div class="store-row">
@@ -1058,7 +1081,7 @@
 						<span class="titlebar-tag">LIVE</span>
 					</div>
 					<div class="window-body form-body">
-						<p class="path-line">C:\AuraWatch\room\{room.slug}\</p>
+						<p class="path-line">~/aurawatch/room/{room.slug}</p>
 						{#if roomGone}
 							<p class="room-error" role="alert">{expiredMsg}</p>
 						{/if}
@@ -1080,7 +1103,7 @@
 						<span class="titlebar-tag">ROOM</span>
 					</div>
 					<div class="window-body result-body">
-						<p class="path-line">C:\AuraWatch\room\{room.slug}\match\</p>
+						<p class="path-line">~/aurawatch/room/{room.slug}/match</p>
 						{@render participantsPanel()}
 						{@render matchPanel()}
 					</div>

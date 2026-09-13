@@ -67,6 +67,8 @@ export function songSecretRecommendation(track: ItunesTrack) {
 		zflix_url: listen[0]?.url,
 		listen_url: track.appleUrl || listen[0]?.url,
 		preview_url: track.previewUrl || undefined,
+		track_id: track.id,
+		apple_url: track.appleUrl || undefined,
 		kind: 'song' as const
 	};
 }

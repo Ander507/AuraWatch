@@ -661,6 +661,13 @@ export function songListenLinks(opts: {
 	const q = encodeURIComponent(opts.artist + ' ' + opts.title);
 	const links: { name: string; url: string; logo: string | null }[] = [];
 
+	// mapping dynamic stream queries across music platforms so users aren't locked to apple music
+	links.push({
+		name: 'YouTube Music',
+		url: 'https://music.youtube.com/search?q=' + q,
+		logo: null
+	});
+	links.push({ name: 'Spotify', url: 'https://open.spotify.com/search/' + q, logo: null });
 	if (opts.appleUrl) {
 		links.push({ name: 'Apple Music', url: opts.appleUrl, logo: null });
 	} else {
@@ -670,11 +677,5 @@ export function songListenLinks(opts: {
 			logo: null
 		});
 	}
-	links.push({ name: 'Spotify', url: 'https://open.spotify.com/search/' + q, logo: null });
-	links.push({
-		name: 'YouTube',
-		url: 'https://www.youtube.com/results?search_query=' + q,
-		logo: null
-	});
 	return links;
 }

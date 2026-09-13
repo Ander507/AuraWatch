@@ -149,6 +149,9 @@ export type CachedRec = {
 	listen_url?: string;
 	watch_link?: string;
 	preview_url?: string;
+	track_id?: number;
+	tmdb_id?: number;
+	apple_url?: string;
 	trailer_youtube_key?: string;
 	platforms?: string[];
 	priceLabel?: string;
@@ -271,6 +274,13 @@ export function slimRoomRec(raw: unknown): CachedRec | null {
 	if (watch) rec.watch_link = watch;
 	const preview = httpsUrl(r.preview_url || r.previewUrl);
 	if (preview) rec.preview_url = preview;
+
+	const trackId = Number(r.track_id ?? r.trackId);
+	if (Number.isFinite(trackId) && trackId > 0) rec.track_id = trackId;
+	const tmdbId = Number(r.tmdb_id ?? r.tmdbId);
+	if (Number.isFinite(tmdbId) && tmdbId > 0) rec.tmdb_id = tmdbId;
+	const apple = httpsUrl(r.apple_url || r.appleUrl);
+	if (apple) rec.apple_url = apple;
 
 	const trailer = youtubeKey(r.trailer_youtube_key || r.trailerYoutubeKey);
 	if (trailer) rec.trailer_youtube_key = trailer;
