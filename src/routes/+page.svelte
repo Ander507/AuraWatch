@@ -8,7 +8,7 @@
 	import { enhance, deserialize } from '$app/forms';
 	import { signOutEverywhere } from '$lib/discordSignIn';
 	import { withoutZflixUrl } from '$lib/watchLinks';
-	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
+	import { hydrateWatchRegion, normalizeRegion, writeStoredRegion } from '$lib/regions';
 	import {
 		CONTENT_LANGUAGES,
 		DEFAULT_LANGUAGE,
@@ -20,6 +20,7 @@
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import MusicPlatformSelector from '$lib/components/MusicPlatformSelector.svelte';
 	import WatchProviders from '$lib/components/WatchProviders.svelte';
+	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
 	import type { WatchProviderItem } from '$lib/watchProviderTypes';
 	import DesktopLoading from '$lib/components/DesktopLoading.svelte';
 	import SavedListCard from '$lib/components/SavedListCard.svelte';
@@ -75,10 +76,16 @@
 		type AuraListItem
 	} from '$lib/auraList';
 	import { formatLetterboxdChecklist } from '$lib/letterboxdExport';
-	import { ui, setUiTheme, setDeskMode, hydrateUiTheme, applyThemeToDocument } from '$lib/uiTheme.svelte';
+	import { ui, hydrateUiTheme, applyThemeToDocument } from '$lib/uiTheme.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
+	import {
+		parseRecDepth,
+		REC_DEPTH_DEFAULT,
+		REC_DEPTH_OPTIONS,
+		type RecDepth
+	} from '$lib/recDepth';
+	import { fetchWatchProviders, tmdbKindFromLabel } from '$lib/watchProviders';
 
-	const REGION_KEY = 'aurawatch_region';
 	const LANG_KEY = 'aurawatch_language';
 	const NOTES_WEIGHT_DEFAULT = 70;
 	const LINK_COPIED_TOAST = '[SYSTEM]: Link copied to clipboard successfully.';
@@ -322,6 +329,7 @@
 	let antiVibe = $state('');
 	let likeTitles = $state<string[]>([]);
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
+	let recDepth = $state<RecDepth>(REC_DEPTH_DEFAULT);
 	let watchRegion = $state('US');
 	let selectedLanguage = $state(DEFAULT_LANGUAGE);
 	let selectedDecade = $state('');
@@ -554,7 +562,8 @@
 			(selectedMaturity && isMediaLane ? 1 : 0) +
 			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0) +
 			(selectedRuntime ? 1 : 0) +
-			(myServices.length ? 1 : 0)
+			(myServices.length ? 1 : 0) +
+			(recDepth !== REC_DEPTH_DEFAULT ? 1 : 0)
 	);
 
 	/** Actual API genres only — never parrot user picks */
@@ -964,6 +973,7 @@
 			region: watchRegion,
 			language: selectedLanguage,
 			notesWeight,
+			depth: recDepth,
 			runtime: selectedRuntime,
 			services: myServices
 		};
@@ -1157,6 +1167,7 @@
 		if (parsed.region) watchRegion = normalizeRegion(parsed.region);
 		if (parsed.language) selectedLanguage = normalizeLanguage(parsed.language);
 		if (parsed.notesWeight != null) notesWeight = parsed.notesWeight;
+		if (parsed.depth) recDepth = parseRecDepth(parsed.depth);
 		if (parsed.runtime) selectedRuntime = parseRuntimeBudget(parsed.runtime);
 		if (parsed.services?.length) myServices = parseServiceIds(parsed.services);
 		return true;
@@ -1328,14 +1339,9 @@
 		tonightSky = clockOnlySky();
 
 		try {
-			const saved = localStorage.getItem(REGION_KEY);
-			if (saved) {
-				watchRegion = normalizeRegion(saved);
-			} else {
-				watchRegion = normalizeRegion(detectRegionFromLocale() || 'US');
-			}
+			watchRegion = hydrateWatchRegion();
 		} catch {
-			watchRegion = normalizeRegion(detectRegionFromLocale() || 'US');
+			watchRegion = 'US';
 		}
 
 		try {
@@ -1404,12 +1410,51 @@
 		applyThemeToDocument(uiTheme, deskMode);
 	});
 
-	function persistRegion() {
-		try {
-			localStorage.setItem(REGION_KEY, normalizeRegion(watchRegion));
-		} catch {
-			/* shrug */
+	function persistRegion(code?: string) {
+		writeStoredRegion(code || watchRegion);
+	}
+
+	async function patchRecWatchRegion(item: Rec, region: string): Promise<Rec> {
+		if (isVibeRec(item) && item.watch?.tmdb_id) {
+			const watch = await fetchWatchProviders(
+				tmdbKindFromLabel(item.watch.mediaType),
+				item.watch.tmdb_id,
+				region,
+				item.watch.title
+			);
+			return {
+				...item,
+				region: watch.region,
+				watch: {
+					...item.watch,
+					providers: watch.providers,
+					region: watch.region,
+					watchLink: watch.watchLink
+				}
+			};
 		}
+		if (!isWatchRec(item) || !item.tmdb_id) {
+			return { ...item, region };
+		}
+		const watch = await fetchWatchProviders(
+			tmdbKindFromLabel(item.mediaType),
+			item.tmdb_id,
+			region,
+			item.title
+		);
+		return {
+			...item,
+			providers: watch.providers,
+			region: watch.region,
+			watchLink: watch.watchLink
+		};
+	}
+
+	async function onWatchRegionChange(code: string) {
+		watchRegion = normalizeRegion(code);
+		persistRegion();
+		if (!results.length) return;
+		results = await Promise.all(results.map((item) => patchRecWatchRegion(item, watchRegion)));
 	}
 
 	function persistLanguage() {
@@ -1523,6 +1568,7 @@
 					seriesLength: selectedSeasonCount || undefined,
 					runtime: selectedRuntime || undefined,
 					services: myServices.length ? myServices : undefined,
+					depth: recDepth,
 					// never resurface what they already bounced or marked seen
 					excludeTitles: excludedTitles()
 				})
@@ -2185,7 +2231,7 @@
 				<RegionSelect
 					id="region"
 					bind:value={watchRegion}
-					onchange={persistRegion}
+					onchange={onWatchRegionChange}
 					disabled={isLoading}
 					variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 				/>
@@ -2354,14 +2400,35 @@
 						/>
 						<span class="weight-end" aria-hidden="true">Notes</span>
 					</div>
-					<p class="field-hint">
-						{likeTitles.length
-							? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
-							: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
-					</p>
-				</div>
+				<p class="field-hint">
+					{likeTitles.length
+						? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
+						: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
+				</p>
+			</div>
 
-				{#if isMediaLane}
+			<div class="field">
+				<span class="field-label" id="depth-label">Obscurity / Niche</span>
+				<div class="segment price-segment" role="group" aria-labelledby="depth-label">
+					{#each REC_DEPTH_OPTIONS as opt (opt.id)}
+						<button
+							type="button"
+							class="segment-btn maturity-btn"
+							class:active={recDepth === opt.id}
+							aria-pressed={recDepth === opt.id}
+							aria-label="{opt.label}, {opt.hint}"
+							onclick={() => (recDepth = opt.id)}
+							disabled={isLoading}
+						>
+							<span class="maturity-label">{opt.label}</span>
+							<span class="maturity-certs">{opt.hint}</span>
+						</button>
+					{/each}
+				</div>
+				<p class="field-hint">Steer how well-known the picks are — hidden gems hunt niche and cult titles.</p>
+			</div>
+
+			{#if isMediaLane}
 					<div class="field">
 						<span class="field-label" id="maturity-label">Content rating</span>
 						<div
@@ -2737,11 +2804,14 @@
 								Decide for me
 							</button>
 						</div>
-						{#if h.providers?.length && !isSongRec(h) && !isGameRec(h) && !isBookRec(h) && !isBoardRec(h) && !isRobloxRec(h)}
+						{#if isWatchRec(h) || (h.providers?.length && !isSongRec(h) && !isGameRec(h) && !isBookRec(h) && !isBoardRec(h) && !isRobloxRec(h))}
 							<WatchProviders
 								providers={h.providers}
-								region={h.region}
+								region={watchRegion}
 								watchLink={h.watchLink}
+								title={h.title}
+								showRegionPicker
+								onRegionChange={onWatchRegionChange}
 								variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 							/>
 						{/if}
@@ -2818,11 +2888,15 @@
 									{/if}
 									<h3 class="vibe-slot-title">{item.watch.title}</h3>
 									<p class="vibe-slot-pitch">{item.watch.pitch}</p>
-									{#if item.watch.providers?.length}
+									{#if item.watch.providers?.length || item.watch.tmdb_id}
 										<WatchProviders
 											providers={item.watch.providers}
+											region={watchRegion}
 											watchLink={item.watch.watchLink}
+											title={item.watch.title}
 											label="Where to watch"
+											showRegionPicker
+											onRegionChange={onWatchRegionChange}
 											variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 											compact
 										/>
@@ -3103,11 +3177,14 @@
 												{/if}
 											{/each}
 										</div>
-									{:else if item.providers?.length}
+									{:else if isWatchRec(item) || item.providers?.length}
 										<WatchProviders
 											providers={item.providers}
-											region={item.region}
+											region={watchRegion}
 											watchLink={item.watchLink}
+											title={item.title}
+											showRegionPicker={isWatchRec(item)}
+											onRegionChange={onWatchRegionChange}
 											variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 											compact
 										/>
@@ -3328,54 +3405,11 @@
 {/snippet}
 
 {#snippet themeSwitcher()}
-	<div class="theme-switcher-stack">
-		<div class="theme-segment" role="group" aria-label="Interface theme">
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'minimal'}
-				aria-pressed={uiTheme === 'minimal'}
-				onclick={() => setUiTheme('minimal')}
-			>
-				Minimal
-			</button>
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'desktop'}
-				aria-pressed={uiTheme === 'desktop'}
-				onclick={() => setUiTheme('desktop')}
-			>
-				Desktop
-			</button>
-		</div>
-		{#if uiTheme === 'desktop'}
-			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'light'}
-					aria-pressed={deskMode === 'light'}
-					onclick={() => setDeskMode('light')}
-				>
-					Light
-				</button>
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'dark'}
-					aria-pressed={deskMode === 'dark'}
-					onclick={() => setDeskMode('dark')}
-				>
-					Dark
-				</button>
-			</div>
-		{/if}
-	</div>
+	<ThemeSwitcher />
 {/snippet}
 
 {#if uiTheme === 'minimal'}
-	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]" class:min-light={deskMode === 'light'}>
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="min-top flex flex-wrap">
 			<h1 class="min-brand">AuraWatch <span class="app-version">v{SITE.version}</span></h1>
@@ -5888,6 +5922,35 @@
 		}
 	}
 
+	.minimal.min-light {
+		--bg: #f3f4f6;
+		--ink: #111111;
+		--muted: #5c5c66;
+		--line: rgba(17, 17, 17, 0.12);
+		--accent: #6d5ce7;
+		--panel: #ffffff;
+	}
+	.minimal.min-light .view-tabs,
+	.minimal.min-light .theme-segment {
+		border-color: rgba(17, 17, 17, 0.14);
+		background: rgba(17, 17, 17, 0.04);
+	}
+	.minimal.min-light .view-tab-btn,
+	.minimal.min-light .theme-seg-btn {
+		color: #5c5c66;
+	}
+	.minimal.min-light .view-tab-btn:hover:not(.active),
+	.minimal.min-light .theme-seg-btn:hover:not(.active) {
+		color: #111111;
+		background: rgba(17, 17, 17, 0.06);
+	}
+	.minimal.min-light .view-tab-btn.active,
+	.minimal.min-light .theme-seg-btn.active {
+		color: #f3f4f6;
+		background: #111111;
+		font-weight: 600;
+	}
+
 	.minimal .min-top {
 		display: flex;
 		align-items: center;
@@ -5934,6 +5997,10 @@
 		line-height: 1.55;
 	}
 
+	:global(html[data-desk='light']) .seo-faq {
+		color: #4b5563;
+	}
+
 	.seo-faq h2,
 	.seo-faq h3 {
 		color: rgba(243, 244, 246, 0.78);
@@ -5941,6 +6008,11 @@
 		font-weight: 600;
 		letter-spacing: -0.02em;
 		margin: 1.25rem 0 0.4rem;
+	}
+
+	:global(html[data-desk='light']) .seo-faq h2,
+	:global(html[data-desk='light']) .seo-faq h3 {
+		color: #1f2937;
 	}
 
 	.seo-faq h2 {

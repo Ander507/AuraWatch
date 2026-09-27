@@ -7,7 +7,7 @@
 	import LikeTitleSelect from '$lib/components/LikeTitleSelect.svelte';
 	import PlatformSelect from '$lib/components/PlatformSelect.svelte';
 	import MusicPlatformSelector from '$lib/components/MusicPlatformSelector.svelte';
-	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
+	import { hydrateWatchRegion, writeStoredRegion } from '$lib/regions';
 	import {
 		CONTENT_LANGUAGES,
 		DEFAULT_LANGUAGE,
@@ -23,10 +23,14 @@
 		saveMusicPlatform,
 		type MusicPlatform
 	} from '$lib/musicPlatform';
+	import {
+		REC_DEPTH_DEFAULT,
+		REC_DEPTH_OPTIONS,
+		type RecDepth
+	} from '$lib/recDepth';
 
 	let { theme, startAdvanced = false }: { theme: UiTheme; startAdvanced?: boolean } = $props();
 
-	const REGION_KEY = 'aurawatch_region';
 	const LANG_KEY = 'aurawatch_language';
 	const NOTES_WEIGHT_DEFAULT = 70;
 
@@ -242,6 +246,7 @@
 	let antiVibe = $state('');
 	let likeTitles = $state<string[]>([]);
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
+	let recDepth = $state<RecDepth>(REC_DEPTH_DEFAULT);
 	let watchRegion = $state('US');
 	let selectedLanguage = $state(DEFAULT_LANGUAGE);
 	let selectedDecade = $state('');
@@ -302,16 +307,15 @@
 			(selectedDecade ? 1 : 0) +
 			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0) +
 			(selectedMaturity && isMediaLane ? 1 : 0) +
-			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0)
+			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0) +
+			(recDepth !== REC_DEPTH_DEFAULT ? 1 : 0)
 	);
 
 	onMount(() => {
 		try {
-			const saved = localStorage.getItem(REGION_KEY);
-			if (saved) watchRegion = normalizeRegion(saved);
-			else watchRegion = normalizeRegion(detectRegionFromLocale() || 'US');
+			watchRegion = hydrateWatchRegion();
 		} catch {
-			watchRegion = normalizeRegion(detectRegionFromLocale() || 'US');
+			watchRegion = 'US';
 		}
 		try {
 			const savedLang = localStorage.getItem(LANG_KEY);
@@ -327,12 +331,8 @@
 		saveMusicPlatform(platform);
 	}
 
-	function persistRegion() {
-		try {
-			localStorage.setItem(REGION_KEY, normalizeRegion(watchRegion));
-		} catch {
-			/* shrug */
-		}
+	function persistRegion(code?: string) {
+		writeStoredRegion(code || watchRegion);
 	}
 
 	function persistLanguage() {
@@ -413,7 +413,8 @@
 			platforms: selectedPlatforms,
 			region: watchRegion,
 			language: selectedLanguage,
-			notesWeight
+			notesWeight,
+			depth: recDepth
 		}).toString();
 	}
 
@@ -777,14 +778,35 @@
 					/>
 					<span class="weight-end" aria-hidden="true">Notes</span>
 				</div>
-				<p class="field-hint">
-					{likeTitles.length
-						? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
-						: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
-				</p>
-			</div>
+			<p class="field-hint">
+				{likeTitles.length
+					? 'Default favors Notes when both are set. Drag left to lean on liked titles.'
+					: 'Add like-titles to use Similar-to. Default (70) favors Notes.'}
+			</p>
+		</div>
 
-			{#if isMediaLane}
+		<div class="field">
+			<span class="field-label" id="depth-label">Obscurity / Niche</span>
+			<div class="segment price-segment" role="group" aria-labelledby="depth-label">
+				{#each REC_DEPTH_OPTIONS as opt (opt.id)}
+					<button
+						type="button"
+						class="segment-btn maturity-btn"
+						class:active={recDepth === opt.id}
+						aria-pressed={recDepth === opt.id}
+						aria-label="{opt.label}, {opt.hint}"
+						onclick={() => (recDepth = opt.id)}
+						disabled={isLoading}
+					>
+						<span class="maturity-label">{opt.label}</span>
+						<span class="maturity-certs">{opt.hint}</span>
+					</button>
+				{/each}
+			</div>
+			<p class="field-hint">Steer how well-known the picks are — hidden gems hunt niche and cult titles.</p>
+		</div>
+
+		{#if isMediaLane}
 				<div class="field">
 					<span class="field-label" id="maturity-label">Content rating</span>
 					<div class="segment maturity-segment" role="group" aria-labelledby="maturity-label">

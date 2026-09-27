@@ -9,11 +9,12 @@
 	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
 	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
 	import LoginPrompt from '$lib/components/LoginPrompt.svelte';
+	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
 	import { parseRoomFilters } from '$lib/groupVibe';
 	import { CONTENT_LANGUAGES, DEFAULT_LANGUAGE, normalizeLanguage } from '$lib/languages';
-	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
+	import { hydrateWatchRegion, writeStoredRegion } from '$lib/regions';
 	import { SITE } from '$lib/seo';
-	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { ui, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import '$lib/styles/app-chrome.css';
 
 	let {
@@ -86,7 +87,6 @@
 		{ id: 'mature', label: 'Mature' }
 	];
 
-	const REGION_KEY = 'aurawatch_region';
 	const LANG_KEY = 'aurawatch_language';
 
 	function formatCreated(iso: string) {
@@ -152,12 +152,11 @@
 		clockLabel = formatClock();
 		if (session?.user?.name) creatorName = String(session.user.name);
 		try {
-			const savedRegion = localStorage.getItem(REGION_KEY);
-			watchRegion = normalizeRegion(savedRegion || detectRegionFromLocale() || 'US');
+			watchRegion = hydrateWatchRegion();
 			const savedLang = localStorage.getItem(LANG_KEY);
 			if (savedLang) language = normalizeLanguage(savedLang);
 		} catch {
-			watchRegion = normalizeRegion(detectRegionFromLocale() || 'US');
+			watchRegion = 'US';
 		}
 		const id = setInterval(() => {
 			clockLabel = formatClock();
@@ -237,50 +236,7 @@
 </svelte:head>
 
 {#snippet themeSwitcher()}
-	<div class="theme-switcher-stack">
-		<div class="theme-segment" role="group" aria-label="Interface theme">
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'minimal'}
-				aria-pressed={uiTheme === 'minimal'}
-				onclick={() => setUiTheme('minimal')}
-			>
-				Minimal
-			</button>
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'desktop'}
-				aria-pressed={uiTheme === 'desktop'}
-				onclick={() => setUiTheme('desktop')}
-			>
-				Desktop
-			</button>
-		</div>
-		{#if uiTheme === 'desktop'}
-			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'light'}
-					aria-pressed={deskMode === 'light'}
-					onclick={() => setDeskMode('light')}
-				>
-					Light
-				</button>
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'dark'}
-					aria-pressed={deskMode === 'dark'}
-					onclick={() => setDeskMode('dark')}
-				>
-					Dark
-				</button>
-			</div>
-		{/if}
-	</div>
+	<ThemeSwitcher />
 {/snippet}
 
 {#snippet viewTabs()}
@@ -307,6 +263,7 @@
 		<RegionSelect
 			id="room-region"
 			bind:value={watchRegion}
+			onchange={(code) => writeStoredRegion(code)}
 			variant={uiTheme === 'minimal' ? 'minimal' : 'desktop'}
 		/>
 	</div>
@@ -411,7 +368,7 @@
 
 <div class="share-app w-full max-w-full overflow-x-hidden">
 	{#if uiTheme === 'minimal'}
-		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]" class:min-light={deskMode === 'light'}>
 			<header class="min-top flex flex-wrap">
 				<a class="min-brand" href={homeHref}>{SITE.name}</a>
 				<div class="header-controls flex flex-wrap">

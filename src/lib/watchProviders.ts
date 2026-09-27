@@ -13,17 +13,25 @@ export type WatchProvidersResponse = {
 	error?: string;
 };
 
+export function tmdbKindFromLabel(mediaType?: string | null): 'movie' | 'tv' {
+	const m = String(mediaType || '').toLowerCase();
+	if (m.includes('movie') && !m.includes('series')) return 'movie';
+	return 'tv';
+}
+
 // extracting regional flatrate providers from tmdb to show instant streaming platforms
 export async function fetchWatchProviders(
 	mediaType: 'movie' | 'tv',
 	id: number,
-	region = 'DK'
+	region = 'US',
+	title = ''
 ): Promise<WatchProvidersResponse> {
 	const params = new URLSearchParams({
 		mediaType,
 		id: String(id),
 		region
 	});
+	if (title.trim()) params.set('title', title.trim());
 	const res = await fetch(`/api/watch-providers?${params}`);
 	if (!res.ok) {
 		return {

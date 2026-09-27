@@ -147,8 +147,198 @@ export const WATCH_REGIONS: { code: string; label: string }[] = [...RAW_REGIONS]
 
 export type WatchRegionCode = string;
 
+export const WATCH_REGION_KEY = 'aurawatch_region';
+
+/** Common overrides shown as chips next to Where to Watch. */
+export const QUICK_WATCH_REGIONS = ['US', 'DK', 'GB', 'DE', 'CA'] as const;
+
 const VALID = new Set(WATCH_REGIONS.map((r) => r.code));
 const LABEL_BY_CODE = new Map(WATCH_REGIONS.map((r) => [r.code, r.label]));
+
+const LANG_TO_REGION: Record<string, string> = {
+	EN: 'US',
+	JA: 'JP',
+	KO: 'KR',
+	DE: 'DE',
+	FR: 'FR',
+	ES: 'ES',
+	IT: 'IT',
+	PT: 'BR',
+	NL: 'NL',
+	SV: 'SE',
+	DA: 'DK',
+	NB: 'NO',
+	NN: 'NO',
+	PL: 'PL',
+	HI: 'IN',
+	FI: 'FI',
+	EL: 'GR',
+	TR: 'TR',
+	CS: 'CZ',
+	HU: 'HU',
+	RO: 'RO',
+	UK: 'UA',
+	AR: 'SA',
+	HE: 'IL',
+	TH: 'TH',
+	VI: 'US',
+	ID: 'ID',
+	MS: 'MY',
+	ZH: 'HK'
+};
+
+// detecting user locale from browser timezone to stop defaulting all streaming providers to us
+const TZ_TO_REGION: Record<string, string> = {
+	'Africa/Cairo': 'EG',
+	'Africa/Casablanca': 'MA',
+	'Africa/Johannesburg': 'ZA',
+	'Africa/Lagos': 'NG',
+	'Africa/Nairobi': 'KE',
+	'Africa/Tunis': 'TN',
+	'America/Argentina/Buenos_Aires': 'AR',
+	'America/Bogota': 'CO',
+	'America/Caracas': 'VE',
+	'America/Chicago': 'US',
+	'America/Denver': 'US',
+	'America/Edmonton': 'CA',
+	'America/Guatemala': 'GT',
+	'America/Halifax': 'CA',
+	'America/Jamaica': 'JM',
+	'America/Lima': 'PE',
+	'America/Los_Angeles': 'US',
+	'America/Mexico_City': 'MX',
+	'America/New_York': 'US',
+	'America/Panama': 'PA',
+	'America/Phoenix': 'US',
+	'America/Puerto_Rico': 'US',
+	'America/Santiago': 'CL',
+	'America/Sao_Paulo': 'BR',
+	'America/St_Johns': 'CA',
+	'America/Toronto': 'CA',
+	'America/Vancouver': 'CA',
+	'America/Winnipeg': 'CA',
+	'Asia/Bangkok': 'TH',
+	'Asia/Dubai': 'AE',
+	'Asia/Hong_Kong': 'HK',
+	'Asia/Jakarta': 'ID',
+	'Asia/Jerusalem': 'IL',
+	'Asia/Karachi': 'PK',
+	'Asia/Kolkata': 'IN',
+	'Asia/Kuala_Lumpur': 'MY',
+	'Asia/Manila': 'PH',
+	'Asia/Qatar': 'QA',
+	'Asia/Riyadh': 'SA',
+	'Asia/Seoul': 'KR',
+	'Asia/Shanghai': 'HK',
+	'Asia/Singapore': 'SG',
+	'Asia/Taipei': 'TW',
+	'Asia/Tokyo': 'JP',
+	'Australia/Perth': 'AU',
+	'Australia/Sydney': 'AU',
+	'Europe/Amsterdam': 'NL',
+	'Europe/Athens': 'GR',
+	'Europe/Belgrade': 'RS',
+	'Europe/Berlin': 'DE',
+	'Europe/Brussels': 'BE',
+	'Europe/Bucharest': 'RO',
+	'Europe/Budapest': 'HU',
+	'Europe/Copenhagen': 'DK',
+	'Europe/Dublin': 'IE',
+	'Europe/Helsinki': 'FI',
+	'Europe/Istanbul': 'TR',
+	'Europe/Kiev': 'UA',
+	'Europe/Kyiv': 'UA',
+	'Europe/Lisbon': 'PT',
+	'Europe/London': 'GB',
+	'Europe/Madrid': 'ES',
+	'Europe/Moscow': 'RU',
+	'Europe/Oslo': 'NO',
+	'Europe/Paris': 'FR',
+	'Europe/Prague': 'CZ',
+	'Europe/Rome': 'IT',
+	'Europe/Stockholm': 'SE',
+	'Europe/Vienna': 'AT',
+	'Europe/Warsaw': 'PL',
+	'Europe/Zurich': 'CH',
+	'Pacific/Auckland': 'NZ',
+	'Pacific/Honolulu': 'US'
+};
+
+const CITY_TO_REGION: Record<string, string> = {
+	AMSTERDAM: 'NL',
+	ATHENS: 'GR',
+	AUCKLAND: 'NZ',
+	BANGKOK: 'TH',
+	BELGRADE: 'RS',
+	BERLIN: 'DE',
+	BOGOTA: 'CO',
+	BRUSSELS: 'BE',
+	BUCHAREST: 'RO',
+	BUDAPEST: 'HU',
+	BUENOS_AIRES: 'AR',
+	CAIRO: 'EG',
+	CARACAS: 'VE',
+	CASABLANCA: 'MA',
+	CHICAGO: 'US',
+	COPENHAGEN: 'DK',
+	DENVER: 'US',
+	DUBAI: 'AE',
+	DUBLIN: 'IE',
+	EDMONTON: 'CA',
+	GUATEMALA: 'GT',
+	HALIFAX: 'CA',
+	HELSINKI: 'FI',
+	HONG_KONG: 'HK',
+	HONOLULU: 'US',
+	ISTANBUL: 'TR',
+	JAKARTA: 'ID',
+	JAMAICA: 'JM',
+	JERUSALEM: 'IL',
+	JOHANNESBURG: 'ZA',
+	KARACHI: 'PK',
+	KIEV: 'UA',
+	KOLKATA: 'IN',
+	KUALA_LUMPUR: 'MY',
+	KYIV: 'UA',
+	LAGOS: 'NG',
+	LIMA: 'PE',
+	LISBON: 'PT',
+	LONDON: 'GB',
+	LOS_ANGELES: 'US',
+	MADRID: 'ES',
+	MANILA: 'PH',
+	MELBOURNE: 'AU',
+	MEXICO_CITY: 'MX',
+	MOSCOW: 'RU',
+	NAIROBI: 'KE',
+	NEW_YORK: 'US',
+	OSLO: 'NO',
+	PANAMA: 'PA',
+	PARIS: 'FR',
+	PERTH: 'AU',
+	PHOENIX: 'US',
+	PRAGUE: 'CZ',
+	QATAR: 'QA',
+	RIYADH: 'SA',
+	ROME: 'IT',
+	SANTIAGO: 'CL',
+	SAO_PAULO: 'BR',
+	SEOUL: 'KR',
+	SHANGHAI: 'HK',
+	SINGAPORE: 'SG',
+	STOCKHOLM: 'SE',
+	ST_JOHNS: 'CA',
+	SYDNEY: 'AU',
+	TAIPEI: 'TW',
+	TOKYO: 'JP',
+	TORONTO: 'CA',
+	TUNIS: 'TN',
+	VANCOUVER: 'CA',
+	VIENNA: 'AT',
+	WARSAW: 'PL',
+	WINNIPEG: 'CA',
+	ZURICH: 'CH'
+};
 
 export function getRegionLabel(code: string): string {
 	const c = String(code || '')
@@ -157,38 +347,115 @@ export function getRegionLabel(code: string): string {
 	return LABEL_BY_CODE.get(c) || c;
 }
 
-/** Guess region from browser locale (en-US → US). Returns null if unknown. */
-export function detectRegionFromLocale(locale?: string | null): string | null {
-	const raw = (locale || (typeof navigator !== 'undefined' ? navigator.language : '') || '')
+export function isWatchRegion(code?: string | null): boolean {
+	const c = String(code || '')
+		.trim()
+		.toUpperCase()
+		.slice(0, 2);
+	return VALID.has(c);
+}
+
+function regionFromLocaleTag(tag?: string | null): string | null {
+	const raw = String(tag || '').trim();
+	if (!raw) return null;
+	try {
+		const loc = new Intl.Locale(raw);
+		if (loc.region && VALID.has(loc.region.toUpperCase())) return loc.region.toUpperCase();
+	} catch {
+		/* old engine, fall through */
+	}
+	const parts = raw.toUpperCase().split(/[-_]/);
+	if (parts.length >= 2 && VALID.has(parts[1].slice(0, 2))) return parts[1].slice(0, 2);
+	return null;
+}
+
+function regionFromLanguageOnly(tag?: string | null): string | null {
+	const raw = String(tag || '')
 		.trim()
 		.toUpperCase();
 	if (!raw) return null;
-
-	// en-US / en_US
-	const parts = raw.split(/[-_]/);
-	const maybe = (parts[1] || parts[0] || '').slice(0, 2);
-	if (VALID.has(maybe)) return maybe;
-
-	// bare language fallbacks that usually map ok
-	const langMap: Record<string, string> = {
-		EN: 'US',
-		JA: 'JP',
-		KO: 'KR',
-		DE: 'DE',
-		FR: 'FR',
-		ES: 'ES',
-		IT: 'IT',
-		PT: 'BR',
-		NL: 'NL',
-		SV: 'SE',
-		NB: 'NO',
-		NN: 'NO',
-		PL: 'PL',
-		HI: 'IN'
-	};
-	const lang = parts[0];
-	const mapped = langMap[lang];
+	const lang = raw.split(/[-_]/)[0];
+	const mapped = LANG_TO_REGION[lang];
 	return mapped && VALID.has(mapped) ? mapped : null;
+}
+
+/** Guess region from browser locale (en-US → US). Returns null if unknown. */
+export function detectRegionFromLocale(locale?: string | null): string | null {
+	const raw = locale || (typeof navigator !== 'undefined' ? navigator.language : '') || '';
+	return regionFromLocaleTag(raw) || regionFromLanguageOnly(raw);
+}
+
+export function detectRegionFromTimeZone(timeZone?: string | null): string | null {
+	let zone = String(timeZone || '').trim();
+	if (!zone && typeof Intl !== 'undefined') {
+		try {
+			zone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+		} catch {
+			zone = '';
+		}
+	}
+	if (!zone) return null;
+
+	const exact = TZ_TO_REGION[zone];
+	if (exact && VALID.has(exact)) return exact;
+
+	const city = zone
+		.split('/')
+		.pop()
+		?.replace(/-/g, '_')
+		.toUpperCase();
+	if (city && CITY_TO_REGION[city] && VALID.has(CITY_TO_REGION[city])) {
+		return CITY_TO_REGION[city];
+	}
+
+	const continent = zone.split('/')[0]?.toLowerCase();
+	if (continent === 'america') return 'US';
+	if (continent === 'australia') return 'AU';
+	return null;
+}
+
+/** Timezone first (where you actually are), then locale country, then language map, then US. */
+export function detectUserRegion(): string {
+	const fromTz = detectRegionFromTimeZone();
+	if (fromTz) return fromTz;
+
+	if (typeof navigator !== 'undefined') {
+		const tags = navigator.languages?.length ? navigator.languages : [navigator.language];
+		for (const tag of tags) {
+			const fromTag = regionFromLocaleTag(tag);
+			if (fromTag) return fromTag;
+		}
+
+		const fromLang = regionFromLanguageOnly(navigator.language);
+		if (fromLang) return fromLang;
+	}
+
+	return 'US';
+}
+
+export function readStoredRegion(): string | null {
+	try {
+		const saved = localStorage.getItem(WATCH_REGION_KEY);
+		return saved && isWatchRegion(saved) ? normalizeRegion(saved) : null;
+	} catch {
+		return null;
+	}
+}
+
+export function writeStoredRegion(code: string) {
+	try {
+		localStorage.setItem(WATCH_REGION_KEY, normalizeRegion(code));
+	} catch {
+		/* shrug */
+	}
+}
+
+export function hydrateWatchRegion(): string {
+	const stored = readStoredRegion();
+	if (stored) return stored;
+	const detected = detectUserRegion();
+	writeStoredRegion(detected);
+	return detected;
 }
 
 export function normalizeRegion(code?: string | null, fallback = 'US') {

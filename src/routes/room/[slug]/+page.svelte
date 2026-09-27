@@ -30,13 +30,14 @@
 		upsertLocalTitle,
 		type LocalTitle
 	} from '$lib/localWatch';
-	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { ui, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import {
 		loadMusicPlatform,
 		musicListenUrl,
 		type MusicPlatform
 	} from '$lib/musicPlatform';
 	import WatchProviders from '$lib/components/WatchProviders.svelte';
+	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
 	import type { WatchProviderItem, WatchProviderType } from '$lib/watchProviderTypes';
 	import { withoutZflixUrl } from '$lib/watchLinks';
 	import '$lib/styles/app-chrome.css';
@@ -622,50 +623,7 @@
 </svelte:head>
 
 {#snippet themeSwitcher()}
-	<div class="theme-switcher-stack">
-		<div class="theme-segment" role="group" aria-label="Interface theme">
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'minimal'}
-				aria-pressed={uiTheme === 'minimal'}
-				onclick={() => setUiTheme('minimal')}
-			>
-				Minimal
-			</button>
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'desktop'}
-				aria-pressed={uiTheme === 'desktop'}
-				onclick={() => setUiTheme('desktop')}
-			>
-				Desktop
-			</button>
-		</div>
-		{#if uiTheme === 'desktop'}
-			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'light'}
-					aria-pressed={deskMode === 'light'}
-					onclick={() => setDeskMode('light')}
-				>
-					Light
-				</button>
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'dark'}
-					aria-pressed={deskMode === 'dark'}
-					onclick={() => setDeskMode('dark')}
-				>
-					Dark
-				</button>
-			</div>
-		{/if}
-	</div>
+	<ThemeSwitcher />
 {/snippet}
 
 {#snippet viewTabs()}
@@ -925,7 +883,12 @@
 							{/if}
 							{#if providers.length}
 								{#if recKind(item) === 'media'}
-									<WatchProviders providers={providers} variant="minimal" compact />
+									<WatchProviders
+										providers={providers}
+										title={item.title}
+										variant="minimal"
+										compact
+									/>
 								{:else}
 									<div class="provider-row" aria-label="Where to watch">
 										{#each providers as p, pi (p.name + String(pi))}
@@ -1029,7 +992,7 @@
 
 <div class="share-app w-full max-w-full overflow-x-hidden">
 	{#if uiTheme === 'minimal'}
-		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+		<main class="minimal w-full max-w-full overflow-x-hidden max-lg:pb-[80px]" class:min-light={deskMode === 'light'}>
 			<header class="min-top flex flex-wrap">
 				<a class="min-brand" href={homeHref}>{SITE.name}</a>
 				<div class="header-controls flex flex-wrap">

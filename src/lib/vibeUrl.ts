@@ -17,6 +17,7 @@ export type VibeUrlState = {
 	region: string;
 	language: string;
 	notesWeight: number | null;
+	depth?: string;
 	runtime?: string;
 	services?: string[];
 };
@@ -64,7 +65,9 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		params.has('language') ||
 		params.has('runtime') ||
 		params.has('services') ||
-		params.has('apps');
+		params.has('apps') ||
+		params.has('depth') ||
+		params.has('obscurity');
 	if (!hasAny) return null;
 
 	const typesRaw = params.get('types') || params.get('format') || '';
@@ -112,6 +115,7 @@ export function parseVibeSearchParams(params: URLSearchParams): Partial<VibeUrlS
 		region: (params.get('region') || '').trim().toUpperCase(),
 		language: (params.get('lang') || params.get('language') || '').trim(),
 		notesWeight,
+		depth: (params.get('depth') || params.get('obscurity') || '').trim().toLowerCase(),
 		runtime: (params.get('runtime') || '').trim().toLowerCase(),
 		services: splitList(params.get('services') || params.get('apps'))
 	};
@@ -134,6 +138,7 @@ export function buildVibeSearchParams(state: VibeUrlState): URLSearchParams {
 	if (state.notesWeight != null && state.notesWeight !== 70) {
 		p.set('weight', String(state.notesWeight));
 	}
+	if (state.depth && state.depth !== 'balanced') p.set('depth', state.depth);
 	if (state.runtime) p.set('runtime', state.runtime);
 	if (state.services?.length) p.set('services', state.services.join(','));
 	return p;

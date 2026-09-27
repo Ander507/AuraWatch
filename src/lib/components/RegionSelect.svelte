@@ -1,20 +1,22 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { tick } from 'svelte';
-	import { WATCH_REGIONS, getRegionLabel } from '$lib/regions';
+	import { WATCH_REGIONS, QUICK_WATCH_REGIONS, getRegionLabel } from '$lib/regions';
 
 	let {
 		value = $bindable('US'),
 		disabled = false,
 		id,
 		onchange,
-		variant = 'desktop'
+		variant = 'desktop',
+		compact = false
 	}: {
 		value?: string;
 		disabled?: boolean;
 		id?: string;
-		onchange?: () => void;
+		onchange?: (code: string) => void;
 		variant?: 'desktop' | 'minimal';
+		compact?: boolean;
 	} = $props();
 
 	let open = $state(false);
@@ -59,7 +61,7 @@
 	function selectRegion(code: string) {
 		value = code;
 		closePanel();
-		onchange?.();
+		onchange?.(code);
 	}
 
 	function scrollHighlightIntoView() {
@@ -112,7 +114,7 @@
 
 <svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
 
-<div class={['region-select', variant]} bind:this={rootEl}>
+<div class={['region-select', variant, compact && 'compact']} bind:this={rootEl}>
 	<button
 		type="button"
 		class="trigger"
@@ -120,9 +122,10 @@
 		{disabled}
 		aria-haspopup="listbox"
 		aria-expanded={open}
+		aria-label="Streaming region, {value} — {selectedLabel}"
 		onclick={toggle}
 	>
-		<span class="trigger-text">{value} — {selectedLabel}</span>
+		<span class="trigger-text">{compact ? value : `${value} — ${selectedLabel}`}</span>
 		<svg class="chevron" class:open viewBox="0 0 12 8" width="12" height="8" aria-hidden="true">
 			<path fill="currentColor" d="M1 1l5 5 5-5" />
 		</svg>
@@ -130,6 +133,20 @@
 
 	{#if open}
 		<div class="panel" transition:fade={{ duration: 140 }} role="presentation">
+			{#if compact}
+				<div class="quick-row" role="group" aria-label="Quick regions">
+					{#each QUICK_WATCH_REGIONS as code (code)}
+						<button
+							type="button"
+							class="quick-chip"
+							class:active={value === code}
+							onclick={() => selectRegion(code)}
+						>
+							{code}
+						</button>
+					{/each}
+				</div>
+			{/if}
 			<input
 				bind:this={searchEl}
 				bind:value={query}
@@ -390,6 +407,75 @@
 	.region-select.minimal .option.active.highlight,
 	.region-select.minimal .option.active:hover {
 		background: rgba(140, 120, 220, 0.18);
+	}
+
+	.region-select.compact {
+		width: auto;
+		min-width: 0;
+	}
+	.region-select.compact .trigger {
+		width: auto;
+		min-width: 2.6rem;
+		justify-content: center;
+		gap: 0.35rem;
+		padding: 0.2rem 0.45rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+	}
+	.region-select.compact .trigger-text {
+		white-space: nowrap;
+	}
+	.region-select.compact .panel {
+		left: auto;
+		right: 0;
+		width: min(18rem, 80vw);
+		min-width: 14rem;
+	}
+	.quick-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		padding: 0.45rem 0.5rem 0.35rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.quick-chip {
+		appearance: none;
+		border: 1px solid var(--line);
+		background: transparent;
+		color: var(--ink);
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		padding: 0.2rem 0.4rem;
+	}
+	.quick-chip.active {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.region-select.desktop .quick-chip {
+		border-width: 2px;
+		border-radius: 0;
+	}
+	.region-select.minimal .quick-chip {
+		border-radius: 999px;
+	}
+
+	:global(.min-light) .region-select.minimal {
+		--ink: #111111;
+		--muted: #666666;
+		--line: rgba(17, 17, 17, 0.16);
+		--accent: #6d5ce7;
+		--window: #ffffff;
+	}
+	:global(.min-light) .region-select.minimal .search:focus {
+		background: #f7f7fa;
+	}
+	:global(.min-light) .region-select.minimal .option:hover,
+	:global(.min-light) .region-select.minimal .option.highlight {
+		background: rgba(109, 92, 231, 0.1);
 	}
 
 	@media (prefers-reduced-motion: reduce) {

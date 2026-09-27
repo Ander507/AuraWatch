@@ -11,7 +11,7 @@ export const ui = $state({
 });
 
 export function themeBackground(theme: UiTheme = ui.theme, deskMode: DeskMode = ui.deskMode) {
-	if (theme === 'minimal') return '#0E0E12';
+	if (theme === 'minimal') return deskMode === 'light' ? '#f3f4f6' : '#0E0E12';
 	return deskMode === 'dark' ? '#0b0d11' : '#7b8a9d';
 }
 
@@ -21,10 +21,12 @@ export function applyThemeToDocument(
 ) {
 	if (typeof document === 'undefined') return;
 	document.documentElement.dataset.ui = theme;
-	document.documentElement.dataset.desk = theme === 'desktop' ? deskMode : '';
-	document.documentElement.style.colorScheme = theme === 'minimal' || deskMode === 'dark' ? 'dark' : 'light';
+	document.documentElement.dataset.desk = deskMode;
+	document.documentElement.style.colorScheme = deskMode === 'dark' ? 'dark' : 'light';
 	const bg = themeBackground(theme, deskMode);
+	document.documentElement.style.background = bg;
 	document.body.style.background = bg;
+	document.body.style.color = deskMode === 'dark' ? '#f3f4f6' : '#111111';
 	const meta = document.querySelector('meta[name="theme-color"]');
 	if (meta) meta.setAttribute('content', bg);
 }

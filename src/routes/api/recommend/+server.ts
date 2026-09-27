@@ -103,6 +103,22 @@ import {
 	type RuntimeBudget
 } from '$lib/runtimeBudget';
 import { parseServiceIds, servicesPromptBlock } from '$lib/myServices';
+import {
+	applyRecDepthToPrompt,
+	parseRecDepth,
+	recDepthPromptBlock,
+	recDepthStrictRule,
+	recDepthTemperature,
+	type RecDepth
+} from '$lib/recDepth';
+
+function geminiGenOpts(depth: RecDepth) {
+	return {
+		json: true as const,
+		maxOutputTokens: 4096,
+		temperature: recDepthTemperature(depth)
+	};
+}
 
 /** Season count for TV picks — optional hard gate when Series Length is set. */
 async function resolveTvSeasons(
@@ -586,6 +602,7 @@ function buildConciergePrompt(opts: {
 	runtimeBudget?: RuntimeBudget;
 	services?: string[];
 	excludeTitles?: string[];
+	depth?: RecDepth;
 }) {
 	const type = formatLabel(opts.types);
 	const allowed = allowedMediaTypes(opts.types);
@@ -658,6 +675,9 @@ function buildConciergePrompt(opts: {
 
 	const notesPrimary = hasNotes && (band === 'notes' || !likes.length);
 	const notesBalanced = hasNotes && band === 'balanced' && likes.length > 0;
+	const depth = opts.depth || 'balanced';
+	const depthLine = recDepthPromptBlock(depth);
+	const depthRule = recDepthStrictRule(depth);
 
 	return `
 You are an expert TV/Movie/Anime concierge.
@@ -671,19 +691,20 @@ ${runtimeLine}
 ${servicesLine}
 ${excludeLine}
 ${antiBlock}
+${depthLine}
 - Vibe/Prompt (Notes): '${prompt || '(none)'}'${likeBlock}
 ${languagePromptLine(opts.language)}
 ${weightingBlock}
 
 CHAIN OF THOUGHT (do this silently before answering — do not output the reasoning):
-1. List hard constraints from Format + Required Genres + Decade/Era + Content rating${seriesLength ? ' + Series length' : ''}${anti ? ' + Anti-vibe exclusions' : ''}${hasNotes ? ' + Notes/Vibe' : ''}${likes.length ? ' + Similar-to titles' : ''}.
+1. List hard constraints from Format + Required Genres + Decade/Era + Content rating${seriesLength ? ' + Series length' : ''}${anti ? ' + Anti-vibe exclusions' : ''}${hasNotes ? ' + Notes/Vibe' : ''}${likes.length ? ' + Similar-to titles' : ''}${depth === 'hidden_gem' ? ' + Obscurity' : ''}.
 2. If Notes mention a song, artist, soundtrack, needle-drop, or "movies/shows with [song]", treat that as a HARD soundtrack constraint — recommend titles where that music is actually featured (or that artist's music is prominently used), not just the same vibe as the song.
-3. Reject any title that fails a hard constraint (wrong format, wrong era/year, wrong content rating, wrong series length, hits anti-vibe, wrong soundtrack fit, wrong length, no thematic fit${hasNotes ? ', fails Notes/vibe when Notes are weighted high' : ''}${likes.length ? `, or is one of the reference titles` : ''}).
-4. OVERRIDE POPULARITY BIAS before picking — popular defaults are guilty until proven perfect.
+3. Reject any title that fails a hard constraint (wrong format, wrong era/year, wrong content rating, wrong series length, hits anti-vibe, wrong soundtrack fit, wrong length, no thematic fit${hasNotes ? ', fails Notes/vibe when Notes are weighted high' : ''}${likes.length ? `, or is one of the reference titles` : ''}${depth === 'hidden_gem' ? ', or is a universally known blockbuster / all-time top-50 default' : ''}).
+${depth === 'hidden_gem' ? '4. OVERRIDE POPULARITY BIAS before picking — skip blockbusters and all-time lists; hunt for niche, indie, or cult-classic matches.' : depth === 'popular' ? '4. Prefer recognizable, widely available titles when they fit the vibe.' : '4. OVERRIDE POPULARITY BIAS before picking — popular defaults are guilty until proven perfect.'}
 ${notesPrimary ? `5. Score every candidate first by Notes/vibe fit (including soundtrack fit). Similar-to may break ties only among equally on-vibe titles.` : notesBalanced ? `5. Score candidates on both Notes fit and Similar-to neighbor fit; keep both in play.` : likes.length ? `5. If Similar-to is set, prioritize thematic neighbors of those titles (same vibe/energy), not sequels of them. Use Notes as a soft bias when present.` : ''}
 
 STRICT RULES:
-1. OVERRIDE POPULARITY BIAS: Do not default to Breaking Bad, Game of Thrones, or Naruto unless they perfectly match the Vibe/Prompt. 
+${depth === 'hidden_gem' ? '1. OVERRIDE POPULARITY BIAS: Exclude universally known blockbuster titles or top 50 all-time entries. Do not default to Breaking Bad, Game of Thrones, Naruto, The Office, Stranger Things, or Marvel/Disney event films unless the user named them in Similar-to.' : '1. OVERRIDE POPULARITY BIAS: Do not default to Breaking Bad, Game of Thrones, or Naruto unless they perfectly match the Vibe/Prompt.'} 
 2. MATCHING: If the user asks for 'Police, 911' and 'Romance', you MUST return a show centered on first responders with romantic subplots (e.g., 'The Rookie', '9-1-1', 'Castle'). 
 3. SOUNDTRACKS: If Notes ask for movies/TV/anime featuring a specific song or artist (e.g. "movies with Nightcall", "shows with Radiohead", "films that use Where Is My Mind"), use your film/TV soundtrack knowledge to recommend titles where that music is prominently featured. Name the song/needle-drop in matchReason. Prefer accurate soundtrack placements over vibe-only neighbors.
 4. Respect the PRIORITY WEIGHTING block above. When Notes weight is high, words like western, cowboy, horror, heist in Notes are non-negotiable — never recommend a title that ignores that vibe (e.g. do NOT suggest Dynasty for a cowboy/western request). Prefer on-theme titles even if less famous (e.g. Yellowstone, 1883, Justified, Godless for western TV).
@@ -697,6 +718,7 @@ ${maturityRule ? `${maturityRule}` : ''}
 ${seriesLengthRule ? `${seriesLengthRule}` : ''}
 ${runtimeRule ? `${runtimeRule}` : ''}
 ${antiRule ? `${antiRule}` : ''}
+${depthRule ? `${depthRule}` : ''}
 ${excludeTitles.length ? `EXCLUDE (HARD): Do not return any of: ${excludeTitles.map((t) => `'${t}'`).join(', ')}. The user already rejected these.` : ''}
 
 RESPONSE JSON FORMAT:
@@ -865,6 +887,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			)
 		: null;
 	const notesWeight = parseNotesWeight(body.notesWeight ?? body.notes_weight ?? body.weight);
+	const depth = parseRecDepth(body.depth ?? body.obscurity ?? body.niche);
 	const selectedGenres: string[] = Array.isArray(body.genres)
 		? body.genres.map((g: any) => String(g).trim()).filter(Boolean)
 		: [];
@@ -934,6 +957,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		antiVibe,
 		likes: likeTitles,
 		notesWeight,
+		depth,
 		region,
 		language,
 		decade: decade?.id || null,
@@ -1015,20 +1039,23 @@ export const POST: RequestHandler = async ({ request }) => {
 			throw error(503, 'song recommendations need GEMINI_API_KEYS configured');
 		}
 
-		const musicPrompt = buildMusicConciergePrompt({
-			genres: selectedGenres,
-			prompt: notesOnly,
-			likeTitles,
-			decade,
-			notesWeight,
-			maturity,
-			antiVibe,
-			language
-		});
+		const musicPrompt = applyRecDepthToPrompt(
+			buildMusicConciergePrompt({
+				genres: selectedGenres,
+				prompt: notesOnly,
+				likeTitles,
+				decade,
+				notesWeight,
+				maturity,
+				antiVibe,
+				language
+			}),
+			depth
+		);
 
 		try {
 			// json mode + fat token budget (3072) last time it truncated mid-object lol
-			const gemini = await callGeminiFlash(musicPrompt, { json: true, maxOutputTokens: 4096 });
+			const gemini = await callGeminiFlash(musicPrompt, geminiGenOpts(depth));
 			let songRecs: GeminiSongRec[];
 			try {
 				songRecs = parseGeminiSongRecs(gemini.text);
@@ -1115,22 +1142,25 @@ export const POST: RequestHandler = async ({ request }) => {
 			);
 		}
 
-		const gamesPrompt = buildGamesConciergePrompt({
-			genres: selectedGenres,
-			prompt: notesOnly,
-			likeTitles,
-			decade,
-			notesWeight,
-			maturity,
-			priceRange,
-			antiVibe,
-			platforms: targetPlatforms,
-			language
-		});
+		const gamesPrompt = applyRecDepthToPrompt(
+			buildGamesConciergePrompt({
+				genres: selectedGenres,
+				prompt: notesOnly,
+				likeTitles,
+				decade,
+				notesWeight,
+				maturity,
+				priceRange,
+				antiVibe,
+				platforms: targetPlatforms,
+				language
+			}),
+			depth
+		);
 		const priceLabel = priceRangeBadge(priceRange);
 
 		try {
-			const gemini = await callGeminiFlash(gamesPrompt, { json: true, maxOutputTokens: 4096 });
+			const gemini = await callGeminiFlash(gamesPrompt, geminiGenOpts(depth));
 			let gameRecs: GeminiGameRec[];
 			try {
 				gameRecs = parseGeminiGameRecs(gemini.text);
@@ -1255,19 +1285,22 @@ export const POST: RequestHandler = async ({ request }) => {
 			throw error(503, 'book recommendations need GEMINI_API_KEYS configured');
 		}
 
-		const booksPrompt = buildBooksConciergePrompt({
-			genres: selectedGenres,
-			prompt: notesOnly,
-			likeTitles,
-			decade,
-			notesWeight,
-			maturity,
-			antiVibe,
-			language
-		});
+		const booksPrompt = applyRecDepthToPrompt(
+			buildBooksConciergePrompt({
+				genres: selectedGenres,
+				prompt: notesOnly,
+				likeTitles,
+				decade,
+				notesWeight,
+				maturity,
+				antiVibe,
+				language
+			}),
+			depth
+		);
 
 		try {
-			const gemini = await callGeminiFlash(booksPrompt, { json: true, maxOutputTokens: 4096 });
+			const gemini = await callGeminiFlash(booksPrompt, geminiGenOpts(depth));
 			let bookRecs;
 			try {
 				bookRecs = parseGeminiBookRecs(gemini.text);
@@ -1352,28 +1385,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		const playerCount = (body.playerCount || body.players || '').toString().trim();
 		const complexity = (body.complexity || body.weight || '').toString().trim();
 
-		const boardPrompt = buildBoardGamesConciergePrompt({
-			genres: selectedGenres,
-			prompt: notesOnly,
-			likeTitles,
-			decade,
-			notesWeight,
-			maturity,
-			antiVibe,
-			language,
-			playerCount: playerCount || undefined,
-			complexity: complexity || undefined
-		});
+		const boardPrompt = applyRecDepthToPrompt(
+			buildBoardGamesConciergePrompt({
+				genres: selectedGenres,
+				prompt: notesOnly,
+				likeTitles,
+				decade,
+				notesWeight,
+				maturity,
+				antiVibe,
+				language,
+				playerCount: playerCount || undefined,
+				complexity: complexity || undefined
+			}),
+			depth
+		);
 
 		try {
 			// one retry if gemini hands us broken json after the repair pass
 			let boardRecs: ReturnType<typeof parseGeminiBoardRecs> = [];
 			let parseFailedTwice = false;
 			for (let attempt = 0; attempt < 2; attempt++) {
-				const gemini = await callGeminiFlash(boardPrompt, {
-					json: true,
-					maxOutputTokens: 4096
-				});
+				const gemini = await callGeminiFlash(boardPrompt, geminiGenOpts(depth));
 				try {
 					// making sure we actually use the repair pass for board games so it stops exploding
 					boardRecs = parseGeminiBoardRecs(gemini.text);
@@ -1485,25 +1518,25 @@ export const POST: RequestHandler = async ({ request }) => {
 			throw error(503, 'Roblox recommendations need GEMINI_API_KEYS configured');
 		}
 
-		const robloxPrompt = buildRobloxConciergePrompt({
-			genres: selectedGenres,
-			prompt: notesOnly,
-			likeTitles,
-			decade,
-			notesWeight,
-			maturity,
-			antiVibe,
-			language
-		});
+		const robloxPrompt = applyRecDepthToPrompt(
+			buildRobloxConciergePrompt({
+				genres: selectedGenres,
+				prompt: notesOnly,
+				likeTitles,
+				decade,
+				notesWeight,
+				maturity,
+				antiVibe,
+				language
+			}),
+			depth
+		);
 
 		try {
 			let robloxRecs: ReturnType<typeof parseGeminiRobloxRecs> = [];
 			let parseFailedTwice = false;
 			for (let attempt = 0; attempt < 2; attempt++) {
-				const gemini = await callGeminiFlash(robloxPrompt, {
-					json: true,
-					maxOutputTokens: 4096
-				});
+				const gemini = await callGeminiFlash(robloxPrompt, geminiGenOpts(depth));
 				try {
 					robloxRecs = parseGeminiRobloxRecs(gemini.text);
 					parseFailedTwice = false;
@@ -1616,19 +1649,19 @@ export const POST: RequestHandler = async ({ request }) => {
 			throw error(400, 'drop a vibe note for Full Vibe (e.g. rainy sunday cozy)');
 		}
 
-		const vibeBundlePrompt = buildFullVibePrompt({
-			prompt: notesOnly || vibePrompt || selectedGenres.join(', '),
-			genres: selectedGenres,
-			antiVibe,
-			language,
-			maturity
-		});
+		const vibeBundlePrompt = applyRecDepthToPrompt(
+			buildFullVibePrompt({
+				prompt: notesOnly || vibePrompt || selectedGenres.join(', '),
+				genres: selectedGenres,
+				antiVibe,
+				language,
+				maturity
+			}),
+			depth
+		);
 
 		try {
-			const gemini = await callGeminiFlash(vibeBundlePrompt, {
-				json: true,
-				maxOutputTokens: 4096
-			});
+			const gemini = await callGeminiFlash(vibeBundlePrompt, geminiGenOpts(depth));
 			let bundle;
 			try {
 				bundle = parseGeminiVibeBundle(gemini.text);
@@ -1748,7 +1781,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const preferNotesOverSimilar =
 		Boolean(notesOnly.trim()) && notesWeightBand(notesWeight) === 'notes';
 
-	if (likeTitles.length && !preferNotesOverSimilar) {
+	if (likeTitles.length && !preferNotesOverSimilar && depth !== 'hidden_gem') {
 		try {
 			const similars = await findSimilarPicks({
 				likeTitles,
@@ -1898,9 +1931,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				language,
 				runtimeBudget,
 				services: wantedServices,
-				excludeTitles
+				excludeTitles,
+				depth
 			});
-			const gemini = await callGeminiFlash(prompt, { json: true, maxOutputTokens: 4096 });
+			const gemini = await callGeminiFlash(prompt, geminiGenOpts(depth));
 			const parsedRecs = parseGeminiRecs(gemini.text);
 			if (!parsedRecs.length) throw new Error('gemini returned no recommendations');
 			const decadeFiltered = decade
@@ -2159,7 +2193,7 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = async () => {
 	return json({
 		ok: true,
-		msg: 'POST { types, genres, prompt, antiVibe, likeTitles, region, language, decade, maturity, priceRange, platforms, seriesLength, notesWeight }',
+		msg: 'POST { types, genres, prompt, antiVibe, likeTitles, region, language, decade, maturity, priceRange, platforms, seriesLength, notesWeight, depth }',
 		keys_loaded: howManyKeysWeGot(),
 		igdb: howManyIgdbCreds() > 0
 	});

@@ -189,7 +189,7 @@ export async function getWorkingGeminiKey(): Promise<{ key: string; model: strin
 
 export async function callGeminiFlash(
 	promptText: string,
-	opts?: { model?: string; json?: boolean; maxOutputTokens?: number }
+	opts?: { model?: string; json?: boolean; maxOutputTokens?: number; temperature?: number }
 ) {
 	const theKeys = grabKeysFromEnv();
 	if (!theKeys.length) throw new Error('no GEMINI_API_KEYS configured');
@@ -197,7 +197,7 @@ export async function callGeminiFlash(
 	const body: Record<string, any> = {
 		contents: [{ parts: [{ text: promptText }] }],
 		generationConfig: {
-			temperature: 0.7,
+			temperature: opts?.temperature ?? 0.7,
 			// bumping token limits and sanitizing gemini response strings so json parsing never crashes into catalog fallback
 			maxOutputTokens: opts?.maxOutputTokens ?? 4096,
 			// json mime makes gemini less chaotic (sometimes)

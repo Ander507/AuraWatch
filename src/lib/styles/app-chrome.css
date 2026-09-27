@@ -1230,6 +1230,35 @@
 		}
 	}
 
+	> .minimal.min-light {
+		--bg: #f3f4f6;
+		--ink: #111111;
+		--muted: #5c5c66;
+		--line: rgba(17, 17, 17, 0.12);
+		--accent: #6d5ce7;
+		--panel: #ffffff;
+	}
+	.minimal.min-light .view-tabs,
+	.minimal.min-light .theme-segment {
+		border-color: rgba(17, 17, 17, 0.14);
+		background: rgba(17, 17, 17, 0.04);
+	}
+	.minimal.min-light .view-tab-btn,
+	.minimal.min-light .theme-seg-btn {
+		color: #5c5c66;
+	}
+	.minimal.min-light .view-tab-btn:hover:not(.active),
+	.minimal.min-light .theme-seg-btn:hover:not(.active) {
+		color: #111111;
+		background: rgba(17, 17, 17, 0.06);
+	}
+	.minimal.min-light .view-tab-btn.active,
+	.minimal.min-light .theme-seg-btn.active {
+		color: #f3f4f6;
+		background: #111111;
+		font-weight: 600;
+	}
+
 	.minimal .min-top {
 		display: flex;
 		align-items: center;

@@ -82,7 +82,8 @@ async function fetchTmdbProviderBuckets(opts: {
 		}
 
 		const data = await res.json();
-		const country = data?.results?.[opts.region] || data?.results?.US || null;
+		// passing dynamic country code into tmdb watch providers endpoint
+		const country = data?.results?.[opts.region] || null;
 		if (!country) {
 			return { watchLink: null, providers: [] };
 		}

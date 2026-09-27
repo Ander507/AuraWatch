@@ -10,8 +10,9 @@
 	import RecommendForm from '$lib/components/RecommendForm.svelte';
 	import AppViewTabs from '$lib/components/AppViewTabs.svelte';
 	import AppBottomNav from '$lib/components/AppBottomNav.svelte';
+	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
 	import { SITE } from '$lib/seo';
-	import { ui, setUiTheme, setDeskMode, hydrateUiTheme } from '$lib/uiTheme.svelte';
+	import { ui, hydrateUiTheme } from '$lib/uiTheme.svelte';
 	import '$lib/styles/app-chrome.css';
 
 	let { data } = $props();
@@ -111,51 +112,7 @@
 </svelte:head>
 
 {#snippet themeSwitcher()}
-	<!-- wiring up the theme toggle so visitors can switch between retro and minimal modes -->
-	<div class="theme-switcher-stack">
-		<div class="theme-segment" role="group" aria-label="Interface theme">
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'minimal'}
-				aria-pressed={uiTheme === 'minimal'}
-				onclick={() => setUiTheme('minimal')}
-			>
-				Minimal
-			</button>
-			<button
-				type="button"
-				class="theme-seg-btn"
-				class:active={uiTheme === 'desktop'}
-				aria-pressed={uiTheme === 'desktop'}
-				onclick={() => setUiTheme('desktop')}
-			>
-				Desktop
-			</button>
-		</div>
-		{#if uiTheme === 'desktop'}
-			<div class="theme-segment desk-mode-segment" role="group" aria-label="Desktop light or dark">
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'light'}
-					aria-pressed={deskMode === 'light'}
-					onclick={() => setDeskMode('light')}
-				>
-					Light
-				</button>
-				<button
-					type="button"
-					class="theme-seg-btn"
-					class:active={deskMode === 'dark'}
-					aria-pressed={deskMode === 'dark'}
-					onclick={() => setDeskMode('dark')}
-				>
-					Dark
-				</button>
-			</div>
-		{/if}
-	</div>
+	<ThemeSwitcher />
 {/snippet}
 
 {#snippet viewTabs()}
@@ -228,7 +185,7 @@
 <!-- wrapping chrome styles so they cannot leak onto Match after you visit a list -->
 <div class="share-app w-full max-w-full overflow-x-hidden">
 {#if uiTheme === 'minimal'}
-	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]">
+	<main class="minimal mobile-shell-{mobilePane} w-full max-w-full overflow-x-hidden max-lg:pb-[80px]" class:min-light={deskMode === 'light'}>
 		<!-- updating the top nav so the buttons don't crush each other on phones -->
 		<header class="min-top flex flex-wrap">
 			<a class="min-brand" href={resolve('/')}>{SITE.name}</a>

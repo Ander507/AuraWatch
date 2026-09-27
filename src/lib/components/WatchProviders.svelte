@@ -1,21 +1,29 @@
 <script lang="ts">
 	import type { WatchProviderItem } from '$lib/watchProviderTypes';
 	import { providerGroups, providerPriceLabel, qualityBadgeLabel } from '$lib/watchProvidersUI';
+	import { providerOfferUrl } from '$lib/watchLinks';
+	import RegionSelect from '$lib/components/RegionSelect.svelte';
 
 	let {
 		providers = [],
 		region = null,
 		watchLink = null,
+		title = '',
 		label = 'Where to Watch',
 		variant = 'desktop',
-		compact = false
+		compact = false,
+		showRegionPicker = false,
+		onRegionChange
 	}: {
 		providers?: WatchProviderItem[];
 		region?: string | null;
 		watchLink?: string | null;
+		title?: string;
 		label?: string;
 		variant?: 'desktop' | 'minimal';
 		compact?: boolean;
+		showRegionPicker?: boolean;
+		onRegionChange?: (code: string) => void;
 	} = $props();
 
 	let groups = $derived(providerGroups(providers));
@@ -40,6 +48,23 @@
 		const quality = qualityBadgeLabel(p.quality);
 		return [p.name, groupLabel, price, quality].filter(Boolean).join(' · ');
 	}
+
+	function tileHref(p: WatchProviderItem): string | null {
+		const search = providerOfferUrl({
+			providerName: p.name,
+			title,
+			fallbackUrl: null
+		});
+		const url = p.url || '';
+		const generic =
+			!url ||
+			url.includes('justwatch.com') ||
+			url.includes('themoviedb.org') ||
+			url.includes('click.justwatch');
+		if (search && generic) return search;
+		if (url) return url;
+		return search || watchLink || null;
+	}
 </script>
 
 {#snippet face(p: WatchProviderItem, groupLabel: string)}
@@ -60,7 +85,7 @@
 	{/if}
 {/snippet}
 
-{#if groups.length}
+{#if groups.length || showRegionPicker}
 	<div class={['watch-providers', variant, compact && 'compact']}>
 		<div class="watch-heading">
 			{#if watchLink}
@@ -75,11 +100,19 @@
 			{:else}
 				<span class="watch-label">{label}</span>
 			{/if}
-			{#if region}
+			{#if showRegionPicker}
+				<RegionSelect
+					value={region || 'US'}
+					{variant}
+					compact
+					onchange={(code) => onRegionChange?.(code)}
+				/>
+			{:else if region}
 				<span class="watch-region">{region}</span>
 			{/if}
 		</div>
 
+		{#if groups.length}
 		<div class="provider-groups">
 			{#each groups as group (group.label)}
 				<section class={['provider-group', `kind-${groupKind(group.label)}`]}>
@@ -93,10 +126,11 @@
 					{/if}
 					<div class="provider-row">
 						{#each group.items as p, pi (p.name + (p.type || '') + String(pi))}
-							{#if p.url}
+							{@const href = tileHref(p)}
+							{#if href}
 								<a
 									class="provider-tile"
-									href={p.url}
+									href={href}
 									target="_blank"
 									rel="external noopener noreferrer"
 									title={tileTitle(p, group.label)}
@@ -118,6 +152,9 @@
 				</section>
 			{/each}
 		</div>
+		{:else}
+			<p class="watch-empty">Nothing listed for {region || 'this region'}</p>
+		{/if}
 	</div>
 {/if}
 
@@ -133,9 +170,17 @@
 
 	.watch-heading {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
+		justify-content: space-between;
 		gap: 0.4rem;
 		flex-wrap: wrap;
+		width: 100%;
+	}
+
+	.watch-empty {
+		margin: 0;
+		font-size: 0.72rem;
+		color: var(--muted);
 	}
 
 	.provider-groups {
@@ -341,11 +386,11 @@
 	}
 
 	.minimal .provider-group + .provider-group {
-		border-top: 1px solid rgba(255, 255, 255, 0.16);
+		border-top: 1px solid var(--line);
 	}
 
 	.minimal .tile-icon {
-		border: 1px solid rgba(255, 255, 255, 0.18);
+		border: 1px solid var(--line);
 		border-radius: 6px;
 		background: var(--panel);
 	}

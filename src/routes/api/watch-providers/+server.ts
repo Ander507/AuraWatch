@@ -6,7 +6,8 @@ export const GET: RequestHandler = async ({ url }) => {
 	const mediaTypeRaw = String(url.searchParams.get('mediaType') || '').toLowerCase();
 	const mediaType = mediaTypeRaw === 'tv' ? 'tv' : mediaTypeRaw === 'movie' ? 'movie' : null;
 	const id = Number(url.searchParams.get('id'));
-	const region = normalizeRegion(url.searchParams.get('region') || 'DK');
+	const region = normalizeRegion(url.searchParams.get('region') || 'US');
+	const title = String(url.searchParams.get('title') || '').trim();
 
 	if (!mediaType || !Number.isFinite(id) || id <= 0) {
 		throw error(400, 'mediaType (movie|tv) and positive id required');
@@ -16,7 +17,8 @@ export const GET: RequestHandler = async ({ url }) => {
 	const result = await fetchWatchProviders({
 		tmdbId: id,
 		mediaType,
-		region
+		region,
+		title: title || null
 	});
 
 	const flatrate = result.providers.filter(
