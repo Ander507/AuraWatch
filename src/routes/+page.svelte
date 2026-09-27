@@ -7,7 +7,7 @@
 	import { resolve } from '$app/paths';
 	import { enhance, deserialize } from '$app/forms';
 	import { signOutEverywhere } from '$lib/discordSignIn';
-	import { getZflixUrl } from '$lib/watchLinks';
+	import { withoutZflixUrl } from '$lib/watchLinks';
 	import { detectRegionFromLocale, normalizeRegion } from '$lib/regions';
 	import {
 		CONTENT_LANGUAGES,
@@ -80,7 +80,6 @@
 
 	const REGION_KEY = 'aurawatch_region';
 	const LANG_KEY = 'aurawatch_language';
-	const ZFLIX_KEY = 'aurawatch_zflix';
 	const NOTES_WEIGHT_DEFAULT = 70;
 	const LINK_COPIED_TOAST = '[SYSTEM]: Link copied to clipboard successfully.';
 
@@ -325,7 +324,6 @@
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
 	let watchRegion = $state('US');
 	let selectedLanguage = $state(DEFAULT_LANGUAGE);
-	let zflixEnabled = $state(false);
 	let selectedDecade = $state('');
 	let selectedMaturity = $state('');
 	let selectedPriceRange = $state('');
@@ -553,7 +551,6 @@
 		(antiVibe.trim() ? 1 : 0) +
 			(selectedDecade ? 1 : 0) +
 			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0) +
-			(zflixEnabled && isMediaLane ? 1 : 0) +
 			(selectedMaturity && isMediaLane ? 1 : 0) +
 			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0) +
 			(selectedRuntime ? 1 : 0) +
@@ -880,7 +877,7 @@
 			author: raw?.author || raw?.creator || raw?.artist,
 			creator: raw?.creator,
 			kind,
-			listen_url: raw?.listen_url || raw?.zflix_url,
+			listen_url: withoutZflixUrl(raw?.listen_url) || withoutZflixUrl(raw?.zflix_url),
 			preview_url: raw?.preview_url || raw?.previewUrl || undefined,
 			track_id:
 				typeof raw?.track_id === 'number'
@@ -1351,17 +1348,6 @@
 		hydrateUiTheme();
 
 		try {
-			const savedZflix = localStorage.getItem(ZFLIX_KEY);
-			if (savedZflix === '1' || savedZflix === 'true') {
-				zflixEnabled = true;
-			} else if (savedZflix === '0' || savedZflix === 'false') {
-				zflixEnabled = false;
-			}
-		} catch {
-			/* shrug */
-		}
-
-		try {
 			document.getElementById('aw-boot')?.setAttribute('hidden', '');
 		} catch {
 			/* shrug */
@@ -1429,15 +1415,6 @@
 	function persistLanguage() {
 		try {
 			localStorage.setItem(LANG_KEY, normalizeLanguage(selectedLanguage));
-		} catch {
-			/* shrug */
-		}
-	}
-
-	function setZflixEnabled(next: boolean) {
-		zflixEnabled = next;
-		try {
-			localStorage.setItem(ZFLIX_KEY, next ? '1' : '0');
 		} catch {
 			/* shrug */
 		}
@@ -2426,28 +2403,6 @@
 						</select>
 						<p class="field-hint">Titles & descriptions from TMDB in this language</p>
 					</div>
-
-					<!-- stashed under advanced so the main form stays cleaner -->
-					<label class="field zflix-switch-row">
-						<span class="zflix-switch-copy">
-							<span class="field-label">ZFlix links</span>
-							<span class="field-hint"
-								>Show Watch on Zflix buttons on results. Warning: ZFlix may show weird ads.</span
-							>
-						</span>
-						<button
-							type="button"
-							class="zflix-switch"
-							class:on={zflixEnabled}
-							role="switch"
-							aria-checked={zflixEnabled}
-							aria-label={zflixEnabled ? 'Disable ZFlix links' : 'Enable ZFlix links'}
-							disabled={isLoading}
-							onclick={() => setZflixEnabled(!zflixEnabled)}
-						>
-							<span class="zflix-switch-thumb" aria-hidden="true"></span>
-						</button>
-					</label>
 				{/if}
 			</div>
 		{/if}
@@ -3167,15 +3122,6 @@
 											rel="external noopener noreferrer"
 										>
 											Listen on {platformLabel(musicPlatform)}
-										</a>
-									{:else if zflixEnabled && item.mediaType !== 'YouTube'}
-										<a
-											class="zflix-cta"
-											href={getZflixUrl(item.title)}
-											target="_blank"
-											rel="external noopener noreferrer"
-										>
-											Watch on Zflix
 										</a>
 									{/if}
 								</div>
@@ -4417,61 +4363,6 @@
 
 	.desktop .region-field :global(.region-select) {
 		width: 100%;
-	}
-
-	.desktop .zflix-switch-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		cursor: pointer;
-	}
-	.desktop .zflix-switch-copy {
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-		min-width: 0;
-	}
-	.desktop .zflix-switch-copy .field-hint {
-		margin: 0;
-	}
-	.desktop .zflix-switch {
-		appearance: none;
-		flex-shrink: 0;
-		width: 2.75rem;
-		height: 1.45rem;
-		padding: 0;
-		border: 2px solid var(--line);
-		border-radius: 0;
-		background: var(--window);
-		cursor: pointer;
-		position: relative;
-		transition: background 0.15s ease;
-	}
-	.desktop .zflix-switch.on {
-		background: var(--accent);
-	}
-	.desktop .zflix-switch:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.desktop .zflix-switch:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: 2px;
-	}
-	.desktop .zflix-switch-thumb {
-		position: absolute;
-		top: 1px;
-		left: 1px;
-		width: calc(1.45rem - 6px);
-		height: calc(1.45rem - 6px);
-		background: var(--line);
-		border-radius: 0;
-		transition: transform 0.15s ease;
-	}
-	.desktop .zflix-switch.on .zflix-switch-thumb {
-		transform: translateX(1.3rem);
-		background: #fff;
 	}
 
 	.desktop .segment {
@@ -6446,62 +6337,6 @@
 
 	.minimal .region-field :global(.region-select) {
 		width: 100%;
-	}
-
-	.minimal .zflix-switch-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		cursor: pointer;
-	}
-	.minimal .zflix-switch-copy {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		min-width: 0;
-	}
-	.minimal .zflix-switch-copy .field-hint {
-		margin: 0;
-	}
-	.minimal .zflix-switch {
-		appearance: none;
-		flex-shrink: 0;
-		width: 2.75rem;
-		height: 1.5rem;
-		padding: 0;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		background: var(--panel);
-		cursor: pointer;
-		position: relative;
-		transition: background 0.18s ease, border-color 0.18s ease;
-	}
-	.minimal .zflix-switch.on {
-		background: var(--accent);
-		border-color: var(--accent);
-	}
-	.minimal .zflix-switch:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	.minimal .zflix-switch:focus-visible {
-		outline: 1px solid var(--accent);
-		outline-offset: 2px;
-	}
-	.minimal .zflix-switch-thumb {
-		position: absolute;
-		top: 2px;
-		left: 2px;
-		width: calc(1.5rem - 6px);
-		height: calc(1.5rem - 6px);
-		background: var(--muted);
-		border-radius: 999px;
-		transition: transform 0.18s ease, background 0.18s ease;
-	}
-	.minimal .zflix-switch.on .zflix-switch-thumb {
-		transform: translateX(1.25rem);
-		background: #0e0e12;
 	}
 
 	.minimal .segment {

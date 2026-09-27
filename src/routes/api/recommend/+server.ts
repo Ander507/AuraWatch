@@ -7,7 +7,6 @@ import { searchTmdbPoster } from '$lib/server/tmdbSearch';
 import { findSimilarPicks } from '$lib/server/tmdbSimilar';
 import { fetchTmdbTrailerKey } from '$lib/server/tmdbVideos';
 import { cleanLikeTitle, parseLikeTitle, stripLikeClause } from '$lib/server/likeTitle';
-import { getZflixUrl } from '$lib/watchLinks';
 import { normalizeRegion } from '$lib/regions';
 import { normalizeLanguage } from '$lib/languages';
 import { buildCacheKey, cacheGet, cacheSet } from '$lib/server/apiCache';
@@ -1841,7 +1840,6 @@ export const POST: RequestHandler = async ({ request }) => {
 							region: watch.region,
 							providers: watch.providers,
 							watch_link: watch.watchLink,
-							zflix_url: getZflixUrl(similar.title),
 							runtimeMinutes: runtime.minutes,
 							likeTitle: similar.referenceTitle,
 							likeTitles: similar.referenceTitles
@@ -1974,7 +1972,6 @@ export const POST: RequestHandler = async ({ request }) => {
 					region: watch.region,
 					providers: watch.providers,
 					watch_link: watch.watchLink,
-					zflix_url: getZflixUrl(rec.title),
 					runtimeMinutes: runtime.minutes,
 					likeTitle: likeLabel || undefined,
 					likeTitles: likeTitles.length ? likeTitles : undefined
@@ -2130,7 +2127,6 @@ export const POST: RequestHandler = async ({ request }) => {
 				region: watch.region,
 				providers: watch.providers,
 				watch_link: watch.watchLink,
-				zflix_url: getZflixUrl(hit.title),
 				likeTitle: likeLabel || undefined,
 				likeTitles: likeTitles.length ? likeTitles : undefined
 			});

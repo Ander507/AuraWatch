@@ -7,6 +7,7 @@ import {
 } from '$lib/groupVibe';
 import { getDb, getLibsqlClient, isTursoConfigured } from './db';
 import { roomParticipants, rooms, type Room, type RoomParticipant } from './schema';
+import { withoutZflixUrl } from '$lib/watchLinks';
 import {
 	parseProvidersJson,
 	sanitizeCoverUrl,
@@ -268,7 +269,7 @@ export function slimRoomRec(raw: unknown): CachedRec | null {
 	const storeLinks = slimStoreLinks(r.storeLinks);
 	if (storeLinks) rec.storeLinks = storeLinks;
 
-	const listen = httpsUrl(r.listen_url || r.zflix_url);
+	const listen = withoutZflixUrl(httpsUrl(r.listen_url) || httpsUrl(r.zflix_url));
 	if (listen) rec.listen_url = listen;
 	const watch = httpsUrl(r.watch_link || r.watchLink);
 	if (watch) rec.watch_link = watch;

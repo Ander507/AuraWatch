@@ -28,7 +28,6 @@
 
 	const REGION_KEY = 'aurawatch_region';
 	const LANG_KEY = 'aurawatch_language';
-	const ZFLIX_KEY = 'aurawatch_zflix';
 	const NOTES_WEIGHT_DEFAULT = 70;
 
 	const FORMAT_OPTIONS = [
@@ -245,7 +244,6 @@
 	let notesWeight = $state(NOTES_WEIGHT_DEFAULT);
 	let watchRegion = $state('US');
 	let selectedLanguage = $state(DEFAULT_LANGUAGE);
-	let zflixEnabled = $state(false);
 	let selectedDecade = $state('');
 	let selectedMaturity = $state('');
 	let selectedPriceRange = $state('');
@@ -303,7 +301,6 @@
 		(antiVibe.trim() ? 1 : 0) +
 			(selectedDecade ? 1 : 0) +
 			(notesWeight !== NOTES_WEIGHT_DEFAULT ? 1 : 0) +
-			(zflixEnabled && isMediaLane ? 1 : 0) +
 			(selectedMaturity && isMediaLane ? 1 : 0) +
 			(selectedLanguage !== DEFAULT_LANGUAGE && isMediaLane ? 1 : 0)
 	);
@@ -319,12 +316,6 @@
 		try {
 			const savedLang = localStorage.getItem(LANG_KEY);
 			if (savedLang) selectedLanguage = normalizeLanguage(savedLang);
-		} catch {
-			/* shrug */
-		}
-		try {
-			const savedZflix = localStorage.getItem(ZFLIX_KEY);
-			if (savedZflix === '1' || savedZflix === 'true') zflixEnabled = true;
 		} catch {
 			/* shrug */
 		}
@@ -347,15 +338,6 @@
 	function persistLanguage() {
 		try {
 			localStorage.setItem(LANG_KEY, normalizeLanguage(selectedLanguage));
-		} catch {
-			/* shrug */
-		}
-	}
-
-	function setZflixEnabled(next: boolean) {
-		zflixEnabled = next;
-		try {
-			localStorage.setItem(ZFLIX_KEY, next ? '1' : '0');
 		} catch {
 			/* shrug */
 		}
@@ -840,27 +822,6 @@
 					</select>
 					<p class="field-hint">Titles & descriptions from TMDB in this language</p>
 				</div>
-
-				<label class="field zflix-switch-row">
-					<span class="zflix-switch-copy">
-						<span class="field-label">ZFlix links</span>
-						<span class="field-hint"
-							>Show Watch on Zflix buttons on results. Warning: ZFlix may show weird ads.</span
-						>
-					</span>
-					<button
-						type="button"
-						class="zflix-switch"
-						class:on={zflixEnabled}
-						role="switch"
-						aria-checked={zflixEnabled}
-						aria-label={zflixEnabled ? 'Disable ZFlix links' : 'Enable ZFlix links'}
-						disabled={isLoading}
-						onclick={() => setZflixEnabled(!zflixEnabled)}
-					>
-						<span class="zflix-switch-thumb" aria-hidden="true"></span>
-					</button>
-				</label>
 			{/if}
 		</div>
 	{/if}

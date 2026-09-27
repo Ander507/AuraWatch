@@ -38,6 +38,7 @@
 	} from '$lib/musicPlatform';
 	import WatchProviders from '$lib/components/WatchProviders.svelte';
 	import type { WatchProviderItem, WatchProviderType } from '$lib/watchProviderTypes';
+	import { withoutZflixUrl } from '$lib/watchLinks';
 	import '$lib/styles/app-chrome.css';
 
 	type Participant = {
@@ -299,7 +300,7 @@
 			author: raw?.author ? String(raw.author) : undefined,
 			providers: asProviders(raw?.providers),
 			storeLinks: asStoreLinks(raw?.storeLinks),
-			listen_url: raw?.listen_url ? String(raw.listen_url) : undefined,
+			listen_url: withoutZflixUrl(raw?.listen_url) || withoutZflixUrl(raw?.zflix_url),
 			watch_link: raw?.watch_link || raw?.watchLink ? String(raw.watch_link || raw.watchLink) : undefined,
 			preview_url: raw?.preview_url ? String(raw.preview_url) : undefined,
 			track_id: typeof raw?.track_id === 'number' ? raw.track_id : undefined,

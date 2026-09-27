@@ -7,9 +7,25 @@ export interface WatchOption {
 	isCustom?: boolean;
 }
 
-/** Deep-link search on Zflix for a title. */
-export function getZflixUrl(title: string): string {
-	return `https://www.zflix.lol/search?q=${encodeURIComponent(title)}`;
+/** True when a URL points at Zflix (including www and subdomains). */
+export function isZflixUrl(raw: unknown): boolean {
+	if (typeof raw !== 'string') return false;
+	const url = raw.trim();
+	if (!url) return false;
+	try {
+		const host = new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+		return host === 'zflix.lol' || host.endsWith('.zflix.lol');
+	} catch {
+		return /zflix\.lol/i.test(url);
+	}
+}
+
+/** Keep a URL unless it points at Zflix. */
+export function withoutZflixUrl(raw: unknown): string | undefined {
+	if (typeof raw !== 'string') return undefined;
+	const url = raw.trim();
+	if (!url || isZflixUrl(url)) return undefined;
+	return url;
 }
 
 /**
@@ -72,11 +88,6 @@ export function generateWatchLinks(
 ): WatchOption[] {
 	const encodedTitle = encodeURIComponent(title);
 	const links: WatchOption[] = [
-		{
-			name: 'Zflix',
-			url: getZflixUrl(title),
-			isCustom: true
-		},
 		{
 			name: 'JustWatch',
 			url: `https://www.justwatch.com/us/search?q=${encodedTitle}`
